@@ -19,9 +19,14 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # 新版 cmdline-tools 已下线 "tools" 包，默认安装会导致 sdkmanager 失败
+          packages: 'platform-tools'
 
       - name: Install SDK platform and build tools
-        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+        run: |
+          sdkmanager --install "platforms;android-34" "build-tools;34.0.0"
+          yes | sdkmanager --licenses > /dev/null || true
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
