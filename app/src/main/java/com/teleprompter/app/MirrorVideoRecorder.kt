@@ -145,10 +145,10 @@ class MirrorVideoRecorder(
         .asFloatBuffer()
         .apply { put(TEX_COORDS); position(0) }
 
-    // mirrorHorizontal=true 时对变换后的竖屏坐标同时做 u/v 轴翻转（等效旋转 180°），
-    // 抵消前置摄像头录制画面相对预览多出的 180° 旋转
+    // mirrorHorizontal=true 时只翻 v 轴消除前置左右镜像。
+    // 实测：v 轴管左右（翻转可消镜像），u 轴管上下——u 轴一翻就会上下颠倒，故保持 0
     private val flipVector =
-        if (mirrorHorizontal) floatArrayOf(1f, 1f) else floatArrayOf(0f, 0f)
+        if (mirrorHorizontal) floatArrayOf(0f, 1f) else floatArrayOf(0f, 0f)
 
     /** 首帧时间戳作为基准，送进编码器的 PTS 从 0 开始 */
     private var baseTimestampNs = 0L
