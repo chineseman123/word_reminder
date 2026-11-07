@@ -297,8 +297,8 @@ class CameraHelper(
             val mirror = try {
                 MirrorVideoRecorder(
                     outputPath = outputPath,
-                    width = sensorWidth,
-                    height = sensorHeight,
+                    sensorWidth = sensorWidth,
+                    sensorHeight = sensorHeight,
                     mirrorHorizontal = true
                 ).also { videoRecorder = it }
             } catch (e: Exception) {

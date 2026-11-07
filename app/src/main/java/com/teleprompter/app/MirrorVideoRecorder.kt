@@ -26,20 +26,22 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * 前置摄像头录像器：摄像头帧 -> GL 翻转 -> MediaCodec 编码 -> MediaMuxer 封装。
+ * 前置摄像头录像器：摄像头帧 -> GL(前置镜像修正) -> MediaCodec 编码 -> MediaMuxer 封装。
  *
- * 不使用 MediaRecorder：它的 Surface 输入对帧和时间戳的处理是黑盒，
- * 插入 GL 转发后容易出现"只有声音 / 时长错乱"的问题。
- * 这里用标准的相机录像管线，帧率、时间戳、朝向全部自己控制。
+ * 不使用 MediaRecorder：它的 Surface 输入对帧和时间戳是黑盒，插入 GL 转发后
+ * 容易出现"只有声音 / 时长错乱"的问题。这里用标准相机录像管线，全部自己控制。
  *
- * 画面朝向沿用原有约定：缓冲区为横向（如 1920x1080），
- * MP4 写入 270° 朝向标记，播放器按竖屏显示。
+ * 方向处理：用 SurfaceTexture.getTransformMatrix() 把横向 sensor 缓冲区
+ * 旋转成正确的竖屏画面，同时它自带前置摄像头的镜像变换；再按需做一次
+ * 水平(u轴)翻转，得到"非镜像"（别人看你的视角）的竖屏视频。
  */
 class MirrorVideoRecorder(
     outputPath: String,
-    private val width: Int,
-    private val height: Int,
-    /** 前置摄像头 sensor 输出为左右镜像，需在纹理空间做水平(u轴)翻转修正；true=开启修正 */
+    private val sensorWidth: Int,
+    private val sensorHeight: Int,
+    private val outputWidth: Int = sensorHeight,
+    private val outputHeight: Int = sensorWidth,
+    /** true = 消除前置摄像头左右镜像（录成非镜像，别人看你的视角） */
     private val mirrorHorizontal: Boolean = true
 ) {
 
@@ -55,7 +57,9 @@ class MirrorVideoRecorder(
         private const val AUDIO_BITRATE = 128_000
 
         private const val EGL_RECORDABLE_ANDROID = 0x3142
-        private const val ORIENTATION_HINT = 270
+
+        /** 画面已经在 GL 里旋转成竖屏，封装时不再写旋转标记 */
+        private const val ORIENTATION_HINT = 0
 
         private const val VERTEX_SHADER = """
             attribute vec2 aPosition;
@@ -67,15 +71,19 @@ class MirrorVideoRecorder(
             }
         """
 
-        // uFlip=(1,0)：u 轴取反=水平翻转(消除前置摄像头左右镜像)；uFlip=(0,1)：v 轴取反=垂直翻转
+        // uSTMatrix 是 SurfaceTexture.getTransformMatrix() 的结果：
+        // 负责把横向 sensor 纹理旋转成竖屏，并带上前置摄像头的镜像。
+        // uFlip 在变换后的坐标上再做一次水平(u轴)翻转，抵消前置镜像。
         private const val FRAGMENT_SHADER = """
             #extension GL_OES_EGL_image_external : require
             precision mediump float;
             varying vec2 vTexCoord;
             uniform samplerExternalOES sTexture;
+            uniform mat4 uSTMatrix;
             uniform vec2 uFlip;
             void main() {
-                vec2 uv = vec2(abs(uFlip.x - vTexCoord.x), abs(uFlip.y - vTexCoord.y));
+                vec2 tc = (uSTMatrix * vec4(vTexCoord, 0.0, 1.0)).xy;
+                vec2 uv = vec2(abs(uFlip.x - tc.x), abs(uFlip.y - tc.y));
                 gl_FragColor = texture2D(sTexture, uv);
             }
         """
@@ -118,9 +126,12 @@ class MirrorVideoRecorder(
     private var texCoordHandle = 0
     private var flipHandle = 0
     private var textureHandle = 0
+    private var stMatrixHandle = 0
 
     private lateinit var surfaceTexture: android.graphics.SurfaceTexture
     private lateinit var cameraSurface: Surface
+
+    private val stMatrix = FloatArray(16)
 
     private val quadBuffer: FloatBuffer = ByteBuffer
         .allocateDirect(QUAD_COORDS.size * 4)
@@ -134,9 +145,9 @@ class MirrorVideoRecorder(
         .asFloatBuffer()
         .apply { put(TEX_COORDS); position(0) }
 
-    // uFlip=(1,0)：u 取反=纹理水平翻转，正对前置摄像头左右镜像；uFlip=(0,1)：v 取反=垂直翻转
+    // mirrorHorizontal=true 时对变换后的竖屏坐标做 u 轴翻转，消除前置镜像
     private val flipVector =
-        if (mirrorHorizontal) floatArrayOf(1f, 0f) else floatArrayOf(0f, 1f)
+        if (mirrorHorizontal) floatArrayOf(1f, 0f) else floatArrayOf(0f, 0f)
 
     /** 首帧时间戳作为基准，送进编码器的 PTS 从 0 开始 */
     private var baseTimestampNs = 0L
@@ -154,13 +165,15 @@ class MirrorVideoRecorder(
     /** 摄像头输出到这个 Surface */
     val inputSurface: Surface get() = cameraSurface
 
-    val framesDrawn: Long get() = frameCount
+    private val framesDrawn: Long get() = frameCount
 
     @Volatile
     private var frameCount = 0L
 
     init {
-        val videoFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+        val videoFormat = MediaFormat.createVideoFormat(
+            MediaFormat.MIMETYPE_VIDEO_AVC, outputWidth, outputHeight
+        ).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, VIDEO_BITRATE)
             setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE)
@@ -234,7 +247,7 @@ class MirrorVideoRecorder(
         audioThread = Thread({ pumpAudio() }, "MirrorAudioDrain").apply { start() }
 
         rendering = true
-        Log.d(TAG, "Recorder started: ${width}x$height, flip=${flipVector.toList()}")
+        Log.d(TAG, "Recorder started: out=${outputWidth}x${outputHeight}, sensor=${sensorWidth}x${sensorHeight}")
     }
 
     /** 停止采集并完成封装 */
@@ -356,9 +369,10 @@ class MirrorVideoRecorder(
             texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
             flipHandle = GLES20.glGetUniformLocation(program, "uFlip")
             textureHandle = GLES20.glGetUniformLocation(program, "sTexture")
+            stMatrixHandle = GLES20.glGetUniformLocation(program, "uSTMatrix")
 
             val texture = android.graphics.SurfaceTexture(textureId).apply {
-                setDefaultBufferSize(width, height)
+                setDefaultBufferSize(sensorWidth, sensorHeight)
                 setOnFrameAvailableListener(
                     { onFrameAvailable() },
                     glHandler
@@ -389,7 +403,10 @@ class MirrorVideoRecorder(
 
     private fun drawFrame() {
         try {
-            GLES20.glViewport(0, 0, width, height)
+            // 更新后立即读取变换矩阵，把横向 sensor 纹理旋转成竖屏
+            surfaceTexture.getTransformMatrix(stMatrix)
+
+            GLES20.glViewport(0, 0, outputWidth, outputHeight)
             GLES20.glClearColor(0f, 0f, 0f, 1f)
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
 
@@ -398,6 +415,7 @@ class MirrorVideoRecorder(
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
             GLES20.glUniform1i(textureHandle, 0)
+            GLES20.glUniformMatrix4fv(stMatrixHandle, 1, false, stMatrix, 0)
             GLES20.glUniform2f(flipHandle, flipVector[0], flipVector[1])
 
             quadBuffer.position(0)
