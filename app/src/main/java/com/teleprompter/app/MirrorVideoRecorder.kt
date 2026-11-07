@@ -61,32 +61,9 @@ class MirrorVideoRecorder(
         /** 画面已经在 GL 里旋转成竖屏，封装时不再写旋转标记 */
         private const val ORIENTATION_HINT = 0
 
-        private const val VERTEX_SHADER = """
-            attribute vec2 aPosition;
-            attribute vec2 aTexCoord;
-            varying vec2 vTexCoord;
-            void main() {
-                gl_Position = vec4(aPosition, 0.0, 1.0);
-                vTexCoord = aTexCoord;
-            }
-        """
-
-        // uSTMatrix 是 SurfaceTexture.getTransformMatrix() 的结果：
-        // 负责把横向 sensor 纹理旋转成竖屏，并带上前置摄像头的镜像。
-        // uFlip 在变换后的坐标上再做一次水平(u轴)翻转，抵消前置镜像。
-        private const val FRAGMENT_SHADER = """
-            #extension GL_OES_EGL_image_external : require
-            precision mediump float;
-            varying vec2 vTexCoord;
-            uniform samplerExternalOES sTexture;
-            uniform mat4 uSTMatrix;
-            uniform vec2 uFlip;
-            void main() {
-                vec2 tc = (uSTMatrix * vec4(vTexCoord, 0.0, 1.0)).xy;
-                vec2 uv = vec2(abs(uFlip.x - tc.x), abs(uFlip.y - tc.y));
-                gl_FragColor = texture2D(sTexture, uv);
-            }
-        """
+        // 与预览 BeautyRenderer 共用同一套 shader：美颜参数为 0 时画面与原先完全一致
+        private const val VERTEX_SHADER = BeautyRenderer.VERTEX_SHADER
+        private const val FRAGMENT_SHADER = BeautyRenderer.FRAGMENT_SHADER
 
         private val QUAD_COORDS = floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)
         private val TEX_COORDS = floatArrayOf(0f, 0f, 1f, 0f, 0f, 1f, 1f, 1f)
@@ -127,6 +104,9 @@ class MirrorVideoRecorder(
     private var flipHandle = 0
     private var textureHandle = 0
     private var stMatrixHandle = 0
+    private var faceHandle = 0
+    private var whitenHandle = 0
+    private var smoothHandle = 0
 
     private lateinit var surfaceTexture: android.graphics.SurfaceTexture
     private lateinit var cameraSurface: Surface
@@ -149,6 +129,28 @@ class MirrorVideoRecorder(
     // 实测：v 轴管左右（翻转可消镜像），u 轴管上下——u 轴一翻就会上下颠倒，故保持 0
     private val flipVector =
         if (mirrorHorizontal) floatArrayOf(0f, 1f) else floatArrayOf(0f, 0f)
+
+    // ==================== 美颜参数（录制期间可实时调整） ====================
+
+    @Volatile
+    private var whiten = 0f
+
+    @Volatile
+    private var smooth = 0f
+
+    @Volatile
+    private var faceRect = BeautyRenderer.NO_FACE
+
+    /** whiten / smooth: 0.0 ~ 1.0 */
+    fun setBeauty(whiten: Float, smooth: Float) {
+        this.whiten = whiten.coerceIn(0f, 1f)
+        this.smooth = smooth.coerceIn(0f, 1f)
+    }
+
+    /** (cx, cy, rx, ry) buffer 纹理坐标；传 BeautyRenderer.NO_FACE 表示无人脸 */
+    fun setFaceRect(rect: FloatArray) {
+        faceRect = rect
+    }
 
     /** 首帧时间戳作为基准，送进编码器的 PTS 从 0 开始 */
     private var baseTimestampNs = 0L
@@ -371,6 +373,9 @@ class MirrorVideoRecorder(
             flipHandle = GLES20.glGetUniformLocation(program, "uFlip")
             textureHandle = GLES20.glGetUniformLocation(program, "sTexture")
             stMatrixHandle = GLES20.glGetUniformLocation(program, "uSTMatrix")
+            faceHandle = GLES20.glGetUniformLocation(program, "uFace")
+            whitenHandle = GLES20.glGetUniformLocation(program, "uWhiten")
+            smoothHandle = GLES20.glGetUniformLocation(program, "uSmooth")
 
             val texture = android.graphics.SurfaceTexture(textureId).apply {
                 setDefaultBufferSize(sensorWidth, sensorHeight)
@@ -418,6 +423,11 @@ class MirrorVideoRecorder(
             GLES20.glUniform1i(textureHandle, 0)
             GLES20.glUniformMatrix4fv(stMatrixHandle, 1, false, stMatrix, 0)
             GLES20.glUniform2f(flipHandle, flipVector[0], flipVector[1])
+
+            val face = faceRect
+            GLES20.glUniform4f(faceHandle, face[0], face[1], face[2], face[3])
+            GLES20.glUniform1f(whitenHandle, whiten)
+            GLES20.glUniform1f(smoothHandle, smooth)
 
             quadBuffer.position(0)
             GLES20.glEnableVertexAttribArray(positionHandle)

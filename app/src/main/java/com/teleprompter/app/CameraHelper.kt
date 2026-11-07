@@ -3,6 +3,7 @@ package com.teleprompter.app
 import android.content.ContentValues
 import android.content.Context
 import android.hardware.camera2.*
+import android.hardware.camera2.params.Face
 import android.media.MediaRecorder
 import android.os.Handler
 import android.os.HandlerThread
@@ -52,6 +53,16 @@ class CameraHelper(
     private var zoomRatio = 1.0f  // 1.0 = no zoom (wide angle), 1.5 = moderate zoom
     var maxZoomRatio = 1.0f  // hardware max, public for MainActivity to read
     private var activeArrayRect: android.graphics.Rect? = null  // sensor active array
+
+    // ---- 美颜 ----
+    private var beautyRenderer: BeautyRenderer? = null
+    private var beautyWhiten = 0f
+    private var beautySmooth = 0f
+    private var faceDetectMode = CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_OFF
+    var faceDetectSupported = false
+        private set
+    private var smoothedFace: FloatArray? = null
+    private var faceMissCount = 0
 
     // Callback for recording state
     var onRecordingStopped: ((String?) -> Unit)? = null
@@ -109,6 +120,20 @@ class CameraHelper(
                 ?: 1.0f
             maxZoomRatio = maxDigitalZoom.coerceAtMost(5.0f)  // cap at 5x for safety
             Log.d(TAG, "Active array: ${activeArrayRect}, max digital zoom: ${maxDigitalZoom}")
+
+            // 人脸检测能力：优先 FULL，其次 SIMPLE（只需要人脸框，SIMPLE 足够）
+            val faceModes = characteristics.get(
+                CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES
+            ) ?: intArrayOf()
+            faceDetectMode = when {
+                faceModes.contains(CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_FULL) ->
+                    CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_FULL
+                faceModes.contains(CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_SIMPLE) ->
+                    CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_SIMPLE
+                else -> CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_OFF
+            }
+            faceDetectSupported = faceDetectMode != CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_OFF
+            Log.d(TAG, "Face detect modes: ${faceModes.toList()}, using: $faceDetectMode")
 
             if (!videoSizes.isNullOrEmpty()) {
                 // Prefer 1920x1080 (landscape sensor dimensions)
@@ -182,34 +207,38 @@ class CameraHelper(
 
     private fun startPreview() {
         val device = cameraDevice ?: return
-        val surfaceTexture = textureView.surfaceTexture
-        if (surfaceTexture == null) {
+        val viewSurfaceTexture = textureView.surfaceTexture
+        if (viewSurfaceTexture == null) {
             Log.w(TAG, "SurfaceTexture not ready")
             return
         }
         try {
-            // Set buffer size to match sensor dimensions for correct aspect ratio
-            surfaceTexture.setDefaultBufferSize(sensorWidth, sensorHeight)
-
-            val surface = Surface(surfaceTexture)
+            // 预览走美颜 GL 管线；初始化失败则退回系统直送 TextureView（无美颜）
+            val previewTarget = tryGetBeautySurface(viewSurfaceTexture) ?: run {
+                viewSurfaceTexture.setDefaultBufferSize(sensorWidth, sensorHeight)
+                Surface(viewSurfaceTexture)
+            }
 
             val requestBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-                addTarget(surface)
+                addTarget(previewTarget)
                 // Apply zoom to reduce wide-angle distortion
                 if (zoomRatio > 1.0f) {
                     set(CaptureRequest.SCALER_CROP_REGION, getCropRegion())
                 }
+                if (faceDetectMode != CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_OFF) {
+                    set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, faceDetectMode)
+                }
             }
 
             device.createCaptureSession(
-                listOf(surface),
+                listOf(previewTarget),
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         Log.d(TAG, "Preview session configured OK")
                         captureSession = session
                         try {
                             requestBuilder.build().let { request ->
-                                session.setRepeatingRequest(request, null, backgroundHandler)
+                                session.setRepeatingRequest(request, captureCallback, backgroundHandler)
                             }
                         } catch (e: Exception) {
                             Log.e(TAG, "Failed to start repeating preview", e)
@@ -225,6 +254,88 @@ class CameraHelper(
         } catch (e: Exception) {
             Log.e(TAG, "Error starting preview", e)
         }
+    }
+
+    /** 创建（或复用）美颜预览渲染器；返回相机预览目标 Surface，失败返回 null 走降级 */
+    private fun tryGetBeautySurface(viewSurfaceTexture: android.graphics.SurfaceTexture): Surface? {
+        beautyRenderer?.let { return it.inputSurface }
+        return try {
+            // 渲染目标是 TextureView：缓冲区设成竖屏尺寸，避免画面二次拉伸
+            viewSurfaceTexture.setDefaultBufferSize(portraitWidth, portraitHeight)
+            val renderer = BeautyRenderer(viewSurfaceTexture, sensorWidth, sensorHeight)
+            renderer.setBeauty(beautyWhiten, beautySmooth)
+            smoothedFace?.let { renderer.setFaceRect(it) }
+            beautyRenderer = renderer
+            Log.d(TAG, "Beauty preview renderer created")
+            renderer.inputSurface
+        } catch (e: Exception) {
+            Log.e(TAG, "BeautyRenderer init failed, fallback to direct preview", e)
+            null
+        }
+    }
+
+    // ---- 人脸检测：把人脸框换算成 buffer 纹理坐标，推给预览/录制两条 GL 管线 ----
+
+    private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult
+        ) {
+            if (faceDetectMode == CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_OFF) return
+            handleFaces(result.get(CaptureResult.STATISTICS_FACES))
+        }
+    }
+
+    private fun handleFaces(faces: Array<Face>?) {
+        val biggest = faces?.maxByOrNull { it.bounds.width() * it.bounds.height() }
+        if (biggest == null) {
+            // 连续多帧无人脸才清除，避免检测抖动导致美颜忽闪
+            if (++faceMissCount >= 8 && smoothedFace != null) {
+                smoothedFace = null
+                pushFaceRect(BeautyRenderer.NO_FACE)
+            }
+            return
+        }
+        faceMissCount = 0
+
+        // face bounds 是 sensor active-array 坐标；输出缓冲区内容 = 裁剪区缩放后的画面，
+        // 归一化到裁剪区即得到 shader 采样用的 buffer 纹理坐标
+        val crop = getCropRegion()
+        val b = biggest.bounds
+        val cx = ((b.exactCenterX() - crop.left) / crop.width()).coerceIn(-0.2f, 1.2f)
+        val cy = ((b.exactCenterY() - crop.top) / crop.height()).coerceIn(-0.2f, 1.2f)
+        // 框放大到约 1.4x/1.5x（半径取宽/高的 0.70/0.75 倍），包住额头和下巴
+        val rx = (b.width() * 0.70f / crop.width()).coerceAtMost(0.5f)
+        val ry = (b.height() * 0.75f / crop.height()).coerceAtMost(0.5f)
+
+        val prev = smoothedFace
+        val out = if (prev == null) {
+            floatArrayOf(cx, cy, rx, ry)
+        } else {
+            // 指数平滑，减少人脸框抖动
+            floatArrayOf(
+                prev[0] + (cx - prev[0]) * 0.4f,
+                prev[1] + (cy - prev[1]) * 0.4f,
+                prev[2] + (rx - prev[2]) * 0.4f,
+                prev[3] + (ry - prev[3]) * 0.4f
+            )
+        }
+        smoothedFace = out
+        pushFaceRect(out)
+    }
+
+    private fun pushFaceRect(rect: FloatArray) {
+        beautyRenderer?.setFaceRect(rect)
+        videoRecorder?.setFaceRect(rect)
+    }
+
+    /** 设置美颜强度（0~1）。预览和录制同时生效，录制中也可实时调整 */
+    fun setBeauty(whiten: Float, smooth: Float) {
+        beautyWhiten = whiten.coerceIn(0f, 1f)
+        beautySmooth = smooth.coerceIn(0f, 1f)
+        beautyRenderer?.setBeauty(beautyWhiten, beautySmooth)
+        videoRecorder?.setBeauty(beautyWhiten, beautySmooth)
     }
 
     fun updatePreview() {
@@ -285,13 +396,16 @@ class CameraHelper(
             captureSession?.close()
             captureSession = null
 
-            val surfaceTexture = textureView.surfaceTexture
-            if (surfaceTexture == null) {
+            val viewSurfaceTexture = textureView.surfaceTexture
+            if (viewSurfaceTexture == null) {
                 Log.e(TAG, "Preview surface unavailable")
                 return false
             }
-            surfaceTexture.setDefaultBufferSize(sensorWidth, sensorHeight)
-            val previewSurface = Surface(surfaceTexture)
+            // 录制期间预览同样走美颜 GL 管线（失败退回直送）
+            val previewSurface = tryGetBeautySurface(viewSurfaceTexture) ?: run {
+                viewSurfaceTexture.setDefaultBufferSize(sensorWidth, sensorHeight)
+                Surface(viewSurfaceTexture)
+            }
 
             // 首选：MediaCodec + MediaMuxer 标准录像管线，可在 GL 中翻转画面
             val mirror = try {
@@ -302,7 +416,12 @@ class CameraHelper(
                     // getTransformMatrix 采样出的录制画面本身就是正确方向（上下对+左右非镜像），
                     // 无需任何翻转，故传 false（实测：翻转任一轴都会把上下或左右弄反）
                     mirrorHorizontal = false
-                ).also { videoRecorder = it }
+                ).also {
+                    videoRecorder = it
+                    // 录制管线同步当前美颜参数和人脸位置
+                    it.setBeauty(beautyWhiten, beautySmooth)
+                    smoothedFace?.let { face -> it.setFaceRect(face) }
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "MirrorVideoRecorder init failed, fallback to MediaRecorder", e)
                 videoRecorder = null
@@ -337,6 +456,9 @@ class CameraHelper(
                 if (zoomRatio > 1.0f) {
                     set(CaptureRequest.SCALER_CROP_REGION, getCropRegion())
                 }
+                if (faceDetectMode != CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_OFF) {
+                    set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, faceDetectMode)
+                }
             }
 
             cameraDevice?.createCaptureSession(
@@ -346,7 +468,7 @@ class CameraHelper(
                         captureSession = session
                         try {
                             captureRequestBuilder.build().let { request ->
-                                session.setRepeatingRequest(request, null, backgroundHandler)
+                                session.setRepeatingRequest(request, captureCallback, backgroundHandler)
                             }
                             // Start recording
                             Handler(context.mainLooper).post {
@@ -524,6 +646,10 @@ class CameraHelper(
             videoRecorder = null
             mediaRecorder?.release()
             mediaRecorder = null
+            beautyRenderer?.release()
+            beautyRenderer = null
+            smoothedFace = null
+            faceMissCount = 0
             stopBackgroundThread()
         } catch (e: Exception) {
             Log.e(TAG, "Error closing camera", e)

@@ -54,6 +54,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var txtTimer: TextView
     private lateinit var seekBg: SeekBar
     private lateinit var txtBg: TextView
+    private lateinit var seekWhiten: SeekBar
+    private lateinit var txtWhiten: TextView
+    private lateinit var seekSmooth: SeekBar
+    private lateinit var txtSmooth: TextView
 
     // Camera & Recording
     private var cameraHelper: CameraHelper? = null
@@ -66,6 +70,8 @@ class MainActivity : AppCompatActivity() {
     private var fontSize = 22f
     private var textOpacity = 80  // 0-100 percent
     private var bgAlpha = 25      // 字幕背景灰度 0-100
+    private var beautyWhiten = 0  // 美白强度 0-100
+    private var beautySmooth = 0  // 磨皮强度 0-100
     private var scrollSpeed = 3
     private var isScrolling = false
     private var scrollHandler: Handler? = null
@@ -115,6 +121,10 @@ class MainActivity : AppCompatActivity() {
         txtTimer = findViewById(R.id.txtTimer)
         seekBg = findViewById(R.id.seekBg)
         txtBg = findViewById(R.id.txtBg)
+        seekWhiten = findViewById(R.id.seekWhiten)
+        txtWhiten = findViewById(R.id.txtWhiten)
+        seekSmooth = findViewById(R.id.seekSmooth)
+        txtSmooth = findViewById(R.id.txtSmooth)
 
         // 恢复上次保存的文案，避免每次打开都被新手介绍覆盖
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
@@ -128,6 +138,14 @@ class MainActivity : AppCompatActivity() {
         seekBg.progress = bgAlpha
         txtBg.text = "$bgAlpha%"
         applySubtitleBackground()
+
+        // 恢复美颜强度
+        beautyWhiten = prefs.getInt(KEY_BEAUTY_WHITEN, 0)
+        beautySmooth = prefs.getInt(KEY_BEAUTY_SMOOTH, 0)
+        seekWhiten.progress = beautyWhiten
+        txtWhiten.text = "$beautyWhiten%"
+        seekSmooth.progress = beautySmooth
+        txtSmooth.text = "$beautySmooth%"
         teleprompterScroll.post {
             val pw = prefs.getInt(KEY_PANEL_W, 0)
             val ph = prefs.getInt(KEY_PANEL_H, 0)
@@ -196,6 +214,8 @@ class MainActivity : AppCompatActivity() {
             cameraHelper?.close()
         }
         cameraHelper = CameraHelper(this, cameraPreview)
+        // CameraHelper 重建后恢复美颜参数（内部会同步给预览/录制两条 GL 管线）
+        cameraHelper?.setBeauty(beautyWhiten / 100f, beautySmooth / 100f)
 
         // Default zoom 1.0x, applied when preview starts
         currentZoom = 1.0f
@@ -354,6 +374,37 @@ class MainActivity : AppCompatActivity() {
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
                 getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                     .putInt(KEY_BG_ALPHA, bgAlpha).apply()
+            }
+        })
+
+        // 美颜：美白（手动可调，预览/录制实时生效）
+        seekWhiten.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                beautyWhiten = progress
+                txtWhiten.text = "$progress%"
+                cameraHelper?.setBeauty(beautyWhiten / 100f, beautySmooth / 100f)
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putInt(KEY_BEAUTY_WHITEN, beautyWhiten).apply()
+            }
+        })
+
+        // 美颜：磨皮（祛痘/黑头淡化，依赖人脸检测，只作用于人脸区域）
+        seekSmooth.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                beautySmooth = progress
+                txtSmooth.text = "$progress%"
+                cameraHelper?.setBeauty(beautyWhiten / 100f, beautySmooth / 100f)
+                if (fromUser && progress > 0 && cameraHelper?.faceDetectSupported == false) {
+                    Toast.makeText(this@MainActivity, "本机不支持人脸检测，磨皮可能不生效", Toast.LENGTH_SHORT).show()
+                }
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putInt(KEY_BEAUTY_SMOOTH, beautySmooth).apply()
             }
         })
 
@@ -812,5 +863,7 @@ class MainActivity : AppCompatActivity() {
         const val KEY_PANEL_Y = "panel_ty"
         const val KEY_PANEL_W = "panel_w"
         const val KEY_PANEL_H = "panel_h"
+        const val KEY_BEAUTY_WHITEN = "beauty_whiten"
+        const val KEY_BEAUTY_SMOOTH = "beauty_smooth"
     }
 }
