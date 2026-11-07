@@ -48,8 +48,8 @@
         android:layout_gravity="top"
         android:orientation="horizontal"
         android:gravity="center_vertical"
-        android:paddingStart="12dp"
-        android:paddingEnd="12dp"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
         android:paddingTop="36dp"
         android:paddingBottom="8dp"
         android:background="#80000000">
@@ -57,8 +57,8 @@
         <!-- Edit button -->
         <ImageButton
             android:id="@+id/btnEdit"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
             android:src="@drawable/ic_edit"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="编辑文案"
@@ -72,18 +72,29 @@
         <!-- Font size down -->
         <ImageButton
             android:id="@+id/btnFontDown"
-            android:layout_width="36dp"
-            android:layout_height="36dp"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
             android:src="@drawable/ic_font_down"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="缩小字体"
             android:tint="#FFFFFF" />
 
+        <!-- Font size indicator -->
+        <TextView
+            android:id="@+id/txtFont"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="22"
+            android:textColor="#FFFFFF"
+            android:textSize="11sp"
+            android:minWidth="24dp"
+            android:gravity="center" />
+
         <!-- Font size up -->
         <ImageButton
             android:id="@+id/btnFontUp"
-            android:layout_width="36dp"
-            android:layout_height="36dp"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
             android:src="@drawable/ic_font_up"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="放大字体"
@@ -92,8 +103,8 @@
         <!-- Opacity down -->
         <ImageButton
             android:id="@+id/btnOpacityDown"
-            android:layout_width="36dp"
-            android:layout_height="36dp"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
             android:src="@drawable/ic_revert"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="降低透明度"
@@ -102,8 +113,8 @@
         <!-- Opacity up -->
         <ImageButton
             android:id="@+id/btnOpacityUp"
-            android:layout_width="36dp"
-            android:layout_height="36dp"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
             android:src="@drawable/ic_forward"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="提高透明度"
@@ -113,15 +124,15 @@
         <View
             android:layout_width="1dp"
             android:layout_height="24dp"
-            android:layout_marginStart="8dp"
+            android:layout_marginStart="6dp"
             android:layout_marginEnd="4dp"
             android:background="#40FFFFFF" />
 
         <!-- Zoom out -->
         <ImageButton
             android:id="@+id/btnZoomOut"
-            android:layout_width="36dp"
-            android:layout_height="36dp"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
             android:src="@drawable/ic_font_down"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="缩小焦距"
@@ -134,21 +145,46 @@
             android:layout_height="wrap_content"
             android:text="1.4x"
             android:textColor="#FFFFFF"
-            android:textSize="12sp"
-            android:minWidth="32dp"
+            android:textSize="11sp"
+            android:minWidth="26dp"
             android:gravity="center" />
 
         <!-- Zoom in -->
         <ImageButton
             android:id="@+id/btnZoomIn"
-            android:layout_width="36dp"
-            android:layout_height="36dp"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
             android:src="@drawable/ic_font_up"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="放大焦距"
             android:tint="#FFFFFF" />
 
+        <!-- Collapse top bar -->
+        <ImageButton
+            android:id="@+id/btnCollapseTop"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:layout_marginStart="2dp"
+            android:src="@drawable/ic_arrow_up"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="收起功能栏"
+            android:tint="#FFFFFF" />
+
     </LinearLayout>
+
+    <!-- 功能栏收起后浮在右上角，点一下重新展开 -->
+    <ImageButton
+        android:id="@+id/btnExpandTop"
+        android:layout_width="34dp"
+        android:layout_height="34dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="36dp"
+        android:layout_marginEnd="6dp"
+        android:src="@drawable/ic_arrow_down"
+        android:background="#80000000"
+        android:contentDescription="展开功能栏"
+        android:tint="#FFFFFF"
+        android:visibility="gone" />
 
     <!-- Bottom bar: record + scroll control -->
     <LinearLayout
@@ -185,6 +221,17 @@
                 android:progress="5"
                 android:paddingStart="8dp"
                 android:paddingEnd="8dp" />
+
+            <!-- 当前速度档位 -->
+            <TextView
+                android:id="@+id/txtSpeed"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="5/20"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:minWidth="38dp"
+                android:gravity="center" />
 
             <!-- Play/Pause scroll -->
             <ImageButton

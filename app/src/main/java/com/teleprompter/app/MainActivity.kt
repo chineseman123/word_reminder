@@ -39,6 +39,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnZoomIn: ImageButton
     private lateinit var btnZoomOut: ImageButton
     private lateinit var txtZoom: TextView
+    private lateinit var txtFont: TextView
+    private lateinit var txtSpeed: TextView
+    private lateinit var btnCollapseTop: ImageButton
+    private lateinit var btnExpandTop: ImageButton
     private lateinit var btnConfirmEdit: Button
     private lateinit var btnCancelEdit: Button
     private lateinit var seekSpeed: SeekBar
@@ -95,10 +99,25 @@ class MainActivity : AppCompatActivity() {
         btnZoomIn = findViewById(R.id.btnZoomIn)
         btnZoomOut = findViewById(R.id.btnZoomOut)
         txtZoom = findViewById(R.id.txtZoom)
+        txtFont = findViewById(R.id.txtFont)
+        txtSpeed = findViewById(R.id.txtSpeed)
+        btnCollapseTop = findViewById(R.id.btnCollapseTop)
+        btnExpandTop = findViewById(R.id.btnExpandTop)
         btnConfirmEdit = findViewById(R.id.btnConfirmEdit)
         btnCancelEdit = findViewById(R.id.btnCancelEdit)
         seekSpeed = findViewById(R.id.seekSpeed)
         txtTimer = findViewById(R.id.txtTimer)
+
+        // 恢复上次保存的文案，避免每次打开都被新手介绍覆盖
+        val saved = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_CONTENT, null)
+        if (saved != null) {
+            teleprompterContent = saved
+        }
+
+        // 初始化数值显示
+        txtFont.text = fontSize.toInt().toString()
+        scrollSpeed = seekSpeed.progress
+        txtSpeed.text = "$scrollSpeed/${seekSpeed.max}"
 
         // Set initial teleprompter text
         updateTeleprompterDisplay()
@@ -245,14 +264,20 @@ class MainActivity : AppCompatActivity() {
             showEditPanel()
         }
 
+        // 顶部功能栏收起 / 展开
+        btnCollapseTop.setOnClickListener { setTopBarCollapsed(true) }
+        btnExpandTop.setOnClickListener { setTopBarCollapsed(false) }
+
         // Font size controls
         btnFontUp.setOnClickListener {
             fontSize = (fontSize + 2).coerceAtMost(40f)
             updateTeleprompterDisplay()
+            txtFont.text = fontSize.toInt().toString()
         }
         btnFontDown.setOnClickListener {
             fontSize = (fontSize - 2).coerceAtLeast(12f)
             updateTeleprompterDisplay()
+            txtFont.text = fontSize.toInt().toString()
         }
 
         // Opacity controls
@@ -285,7 +310,8 @@ class MainActivity : AppCompatActivity() {
         // Scroll speed
         seekSpeed.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                scrollSpeed = progress.coerceAtLeast(1)
+                scrollSpeed = progress
+                txtSpeed.text = "$progress/${seekBar?.max ?: 20}"
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
@@ -309,6 +335,7 @@ class MainActivity : AppCompatActivity() {
         // Edit panel
         btnConfirmEdit.setOnClickListener {
             teleprompterContent = editText.text.toString()
+            saveTeleprompterContent()
             updateTeleprompterDisplay()
             hideEditPanel()
         }
@@ -337,12 +364,20 @@ class MainActivity : AppCompatActivity() {
         editPanel.visibility = View.VISIBLE
         topBar.visibility = View.GONE
         bottomBar.visibility = View.GONE
+        btnExpandTop.visibility = View.GONE
     }
 
     private fun hideEditPanel() {
         editPanel.visibility = View.GONE
-        topBar.visibility = View.VISIBLE
         bottomBar.visibility = View.VISIBLE
+        applyTopBarVisibility()
+        controlsVisible = true
+    }
+
+    private fun saveTeleprompterContent() {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putString(KEY_CONTENT, teleprompterContent)
+            .apply()
     }
 
     // ==================== Recording ====================
@@ -367,6 +402,7 @@ class MainActivity : AppCompatActivity() {
                 if (isRecording) {
                     topBar.visibility = View.GONE
                     bottomBar.visibility = View.GONE
+                    btnExpandTop.visibility = View.GONE
                 }
             }, 3000)
         } else {
@@ -381,8 +417,9 @@ class MainActivity : AppCompatActivity() {
         btnRecord.contentDescription = "开始录制"
         stopTimer()
         pauseScroll()
-        topBar.visibility = View.VISIBLE
+        applyTopBarVisibility()
         bottomBar.visibility = View.VISIBLE
+        controlsVisible = true
     }
 
     private fun getOutputFile(): File {
@@ -442,10 +479,31 @@ class MainActivity : AppCompatActivity() {
     // ==================== Controls visibility ====================
 
     private var controlsVisible = true
+    private var isTopBarCollapsed = false
+
     private fun toggleControlsVisibility() {
         controlsVisible = !controlsVisible
-        topBar.visibility = if (controlsVisible) View.VISIBLE else View.GONE
-        bottomBar.visibility = if (controlsVisible) View.VISIBLE else View.GONE
+        if (controlsVisible) {
+            applyTopBarVisibility()
+            bottomBar.visibility = View.VISIBLE
+        } else {
+            topBar.visibility = View.GONE
+            bottomBar.visibility = View.GONE
+            btnExpandTop.visibility = View.GONE
+        }
+    }
+
+    /** 收起 / 展开顶部功能栏：收起后只留右上角一个小按钮 */
+    private fun setTopBarCollapsed(collapsed: Boolean) {
+        isTopBarCollapsed = collapsed
+        controlsVisible = true
+        applyTopBarVisibility()
+        bottomBar.visibility = View.VISIBLE
+    }
+
+    private fun applyTopBarVisibility() {
+        topBar.visibility = if (isTopBarCollapsed) View.GONE else View.VISIBLE
+        btnExpandTop.visibility = if (isTopBarCollapsed) View.VISIBLE else View.GONE
     }
 
     // ==================== Lifecycle ====================
@@ -473,5 +531,10 @@ class MainActivity : AppCompatActivity() {
         if (cameraHelper == null || !cameraHelper!!.isOpened) {
             startCamera()
         }
+    }
+
+    private companion object {
+        const val PREFS_NAME = "teleprompter_prefs"
+        const val KEY_CONTENT = "script_content"
     }
 }
