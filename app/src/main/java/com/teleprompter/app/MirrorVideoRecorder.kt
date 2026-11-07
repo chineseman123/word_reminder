@@ -39,8 +39,8 @@ class MirrorVideoRecorder(
     outputPath: String,
     private val width: Int,
     private val height: Int,
-    /** true 时在缓冲区坐标系做纵向翻转，等价于竖屏画面左右镜像 */
-    private val flipVertical: Boolean = true
+    /** 前置摄像头 sensor 输出为左右镜像，需在纹理空间做水平(u轴)翻转修正；true=开启修正 */
+    private val mirrorHorizontal: Boolean = true
 ) {
 
     companion object {
@@ -67,7 +67,7 @@ class MirrorVideoRecorder(
             }
         """
 
-        // uFlip 取 (0,1) 时纵向翻转，(1,0) 时横向翻转
+        // uFlip=(1,0)：u 轴取反=水平翻转(消除前置摄像头左右镜像)；uFlip=(0,1)：v 轴取反=垂直翻转
         private const val FRAGMENT_SHADER = """
             #extension GL_OES_EGL_image_external : require
             precision mediump float;
@@ -134,8 +134,9 @@ class MirrorVideoRecorder(
         .asFloatBuffer()
         .apply { put(TEX_COORDS); position(0) }
 
+    // uFlip=(1,0)：u 取反=纹理水平翻转，正对前置摄像头左右镜像；uFlip=(0,1)：v 取反=垂直翻转
     private val flipVector =
-        if (flipVertical) floatArrayOf(0f, 1f) else floatArrayOf(1f, 0f)
+        if (mirrorHorizontal) floatArrayOf(1f, 0f) else floatArrayOf(0f, 1f)
 
     /** 首帧时间戳作为基准，送进编码器的 PTS 从 0 开始 */
     private var baseTimestampNs = 0L

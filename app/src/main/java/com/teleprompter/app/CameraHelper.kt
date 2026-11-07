@@ -299,7 +299,7 @@ class CameraHelper(
                     outputPath = outputPath,
                     width = sensorWidth,
                     height = sensorHeight,
-                    flipVertical = true
+                    mirrorHorizontal = true
                 ).also { videoRecorder = it }
             } catch (e: Exception) {
                 Log.e(TAG, "MirrorVideoRecorder init failed, fallback to MediaRecorder", e)
