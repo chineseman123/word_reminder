@@ -16,6 +16,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.math.abs
+import org.json.JSONArray
 
 
 class MainActivity : AppCompatActivity() {
@@ -63,10 +64,8 @@ class MainActivity : AppCompatActivity() {
     private var scrollHandler: Handler? = null
     private var scrollRunnable: Runnable? = null
 
-    // Zoom state — default 1.4x to reduce wide-angle distortion
-    // Front camera wide-angle (2-3mm equiv) causes noticeable face distortion at close range.
-    // 1.4x zoom crops edges, simulates ~4mm focal length, much more natural.
-    private var currentZoom = 1.4f
+    // Zoom state — default 1.0x (无缩放)
+    private var currentZoom = 1.0f
 
     // Default teleprompter content
     private var teleprompterContent = "欢迎使用提词器！\n\n请点击编辑按钮，粘贴您要提词的内容。\n\n录制时，提词文字会在此处滚动显示，帮助您自然地面对镜头讲话。\n\n您可以调节：\n- 文字大小（字体按钮）\n- 滚动速度（速度滑块）\n- 文字透明度（透明度按钮）\n\n开始录制后，控制栏会自动隐藏，轻触屏幕可重新显示。"
@@ -170,9 +169,8 @@ class MainActivity : AppCompatActivity() {
         }
         cameraHelper = CameraHelper(this, cameraPreview)
 
-        // Set default zoom to reduce wide-angle distortion
-        // Will be applied when preview starts
-        currentZoom = 1.4f
+        // Default zoom 1.0x, applied when preview starts
+        currentZoom = 1.0f
 
         // Adjust TextureView aspect ratio to match camera preview
         // This prevents the preview from being stretched/distorted
@@ -336,11 +334,15 @@ class MainActivity : AppCompatActivity() {
         btnConfirmEdit.setOnClickListener {
             teleprompterContent = editText.text.toString()
             saveTeleprompterContent()
+            saveScriptToHistory(teleprompterContent)
             updateTeleprompterDisplay()
             hideEditPanel()
         }
         btnCancelEdit.setOnClickListener {
             hideEditPanel()
+        }
+        findViewById<Button>(R.id.btnHistoryEdit).setOnClickListener {
+            showScriptHistory()
         }
 
         // Tap to show/hide controls during recording
@@ -372,6 +374,44 @@ class MainActivity : AppCompatActivity() {
         bottomBar.visibility = View.VISIBLE
         applyTopBarVisibility()
         controlsVisible = true
+    }
+
+    // ---- 台词本：保存/读取历史台词 ----
+    private fun saveScriptToHistory(content: String) {
+        val trimmed = content.trim()
+        if (trimmed.isEmpty()) return
+        val list = loadScriptHistory().toMutableList()
+        list.remove(trimmed)          // 去重
+        list.add(0, trimmed)          // 最新在前
+        val arr = JSONArray()
+        list.take(20).forEach { arr.put(it) }   // 最多保留 20 条
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putString("script_history", arr.toString()).apply()
+    }
+
+    private fun loadScriptHistory(): List<String> {
+        val json = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .getString("script_history", null) ?: return emptyList()
+        return try {
+            val arr = JSONArray(json)
+            (0 until arr.length()).map { arr.getString(it) }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun showScriptHistory() {
+        val history = loadScriptHistory()
+        if (history.isEmpty()) {
+            Toast.makeText(this, "暂无历史台词", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val titles = history.map { it.replace("\n", " ").take(30) }.toTypedArray()
+        android.app.AlertDialog.Builder(this)
+            .setTitle("选择历史台词")
+            .setItems(titles) { _, which -> editText.setText(history[which]) }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun saveTeleprompterContent() {
