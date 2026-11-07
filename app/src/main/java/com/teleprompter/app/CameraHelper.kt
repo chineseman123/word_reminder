@@ -299,7 +299,9 @@ class CameraHelper(
                     outputPath = outputPath,
                     sensorWidth = sensorWidth,
                     sensorHeight = sensorHeight,
-                    mirrorHorizontal = true
+                    // getTransformMatrix 采样出的录制画面本身就是正确方向（上下对+左右非镜像），
+                    // 无需任何翻转，故传 false（实测：翻转任一轴都会把上下或左右弄反）
+                    mirrorHorizontal = false
                 ).also { videoRecorder = it }
             } catch (e: Exception) {
                 Log.e(TAG, "MirrorVideoRecorder init failed, fallback to MediaRecorder", e)
