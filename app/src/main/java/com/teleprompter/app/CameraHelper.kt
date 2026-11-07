@@ -22,6 +22,7 @@ class CameraHelper(
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
     private var mediaRecorder: MediaRecorder? = null
+    private var videoRecorder: MirrorVideoRecorder? = null
 
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
@@ -284,35 +285,47 @@ class CameraHelper(
             captureSession?.close()
             captureSession = null
 
-            // Setup MediaRecorder
-            val recorder = MediaRecorder()
-            mediaRecorder = recorder
-
-            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
-            recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE)
-            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            recorder.setOutputFile(outputPath)
-            recorder.setVideoEncodingBitRate(8 * 1024 * 1024) // 8 Mbps for 1080p
-            recorder.setVideoFrameRate(30)
-            // Must use sensor dimensions (landscape) for setVideoSize
-            // The orientation hint tells the player to display as portrait
-            recorder.setVideoSize(sensorWidth, sensorHeight)
-            recorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            recorder.setAudioEncodingBitRate(128000)
-            recorder.setAudioSamplingRate(44100)
-            // Front camera portrait = 270 degrees
-            recorder.setOrientationHint(270)
-
-            recorder.prepare()
-            Log.d(TAG, "MediaRecorder prepared, sensor: ${sensorWidth}x${sensorHeight}, portrait hint: 270°")
-
-            val surfaceTexture = textureView.surfaceTexture!!
+            val surfaceTexture = textureView.surfaceTexture
+            if (surfaceTexture == null) {
+                Log.e(TAG, "Preview surface unavailable")
+                return false
+            }
             surfaceTexture.setDefaultBufferSize(sensorWidth, sensorHeight)
             val previewSurface = Surface(surfaceTexture)
 
-            // 录制直接写入 MediaRecorder 的 Surface（保持原有稳定路径）
-            val recordTarget: Surface = recorder.surface
+            // 首选：MediaCodec + MediaMuxer 标准录像管线，可在 GL 中翻转画面
+            val mirror = try {
+                MirrorVideoRecorder(
+                    outputPath = outputPath,
+                    width = sensorWidth,
+                    height = sensorHeight,
+                    flipVertical = true
+                ).also { videoRecorder = it }
+            } catch (e: Exception) {
+                Log.e(TAG, "MirrorVideoRecorder init failed, fallback to MediaRecorder", e)
+                videoRecorder = null
+                null
+            }
+
+            val recorder: MediaRecorder?
+            val recordTarget: Surface
+            if (mirror != null) {
+                recorder = null
+                mediaRecorder = null
+                recordTarget = mirror.inputSurface
+                Log.d(TAG, "Using MediaCodec recorder with mirror correction")
+            } else {
+                recorder = createLegacyRecorder(outputPath)
+                mediaRecorder = recorder
+                recordTarget = recorder.surface
+                Handler(context.mainLooper).post {
+                    android.widget.Toast.makeText(
+                        context,
+                        "镜像录制初始化失败，已改用普通录制",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
 
             // Create capture session with both surfaces
             val captureRequestBuilder = cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
@@ -336,12 +349,16 @@ class CameraHelper(
                             // Start recording
                             Handler(context.mainLooper).post {
                                 try {
-                                    recorder.start()
+                                    if (mirror != null) {
+                                        mirror.start()
+                                    } else {
+                                        recorder!!.start()
+                                    }
                                     isRecording = true
                                     currentVideoPath = outputPath
                                     Log.d(TAG, "Recording started successfully: $outputPath")
                                 } catch (e: Exception) {
-                                    Log.e(TAG, "mediaRecorder.start() failed", e)
+                                    Log.e(TAG, "Failed to start recorder", e)
                                     Handler(context.mainLooper).post {
                                         android.widget.Toast.makeText(context, "录制启动失败: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
                                     }
@@ -373,42 +390,69 @@ class CameraHelper(
         }
     }
 
+    private fun createLegacyRecorder(outputPath: String): MediaRecorder {
+        val recorder = MediaRecorder()
+        recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+        recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE)
+        recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+        recorder.setOutputFile(outputPath)
+        recorder.setVideoEncodingBitRate(8 * 1024 * 1024)
+        recorder.setVideoFrameRate(30)
+        recorder.setVideoSize(sensorWidth, sensorHeight)
+        recorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+        recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+        recorder.setAudioEncodingBitRate(128000)
+        recorder.setAudioSamplingRate(44100)
+        recorder.setOrientationHint(270)
+        recorder.prepare()
+        Log.d(TAG, "Legacy MediaRecorder prepared: ${sensorWidth}x${sensorHeight}")
+        return recorder
+    }
+
     fun stopRecording() {
         if (!isRecording) return
         isRecording = false
 
         val savedPath = currentVideoPath
+        val recorder = videoRecorder
+        val legacy = mediaRecorder
+        videoRecorder = null
+        mediaRecorder = null
 
-        try {
-            mediaRecorder?.apply {
-                stop()
-                release()
-            }
-            mediaRecorder = null
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping mediaRecorder", e)
+        // 结束编码、封装、写相册都比较耗时，放后台线程，避免主线程卡住
+        backgroundHandler?.post {
             try {
-                mediaRecorder?.release()
-                mediaRecorder = null
-            } catch (_: Exception) {}
+                recorder?.stop()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping mirror recorder", e)
+            }
+
+            try {
+                legacy?.apply {
+                    stop()
+                    release()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping mediaRecorder", e)
+                try {
+                    legacy?.release()
+                } catch (_: Exception) {}
+            }
+
+            if (savedPath != null) {
+                saveVideoToGallery(savedPath)
+            }
+
+            Handler(context.mainLooper).post {
+                try {
+                    startPreview()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error restarting preview after recording", e)
+                }
+                Log.d(TAG, "Recording stopped. File: $savedPath")
+                onRecordingStopped?.invoke(savedPath)
+            }
         }
-
-        // Save to gallery so it's visible in album
-        if (savedPath != null) {
-            saveVideoToGallery(savedPath)
-        }
-
-        // Restart preview
-        try {
-            startPreview()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error restarting preview after recording", e)
-        }
-
-        Log.d(TAG, "Recording stopped. File: $savedPath")
-
-        // Notify callback
-        onRecordingStopped?.invoke(savedPath)
     }
 
     private fun saveVideoToGallery(filePath: String) {
@@ -416,6 +460,13 @@ class CameraHelper(
             val file = java.io.File(filePath)
             if (!file.exists()) {
                 Log.e(TAG, "Video file does not exist: $filePath")
+                return
+            }
+            if (file.length() <= 0L) {
+                Log.e(TAG, "Video file is empty: $filePath")
+                Handler(context.mainLooper).post {
+                    android.widget.Toast.makeText(context, "录制失败，视频文件为空", android.widget.Toast.LENGTH_LONG).show()
+                }
                 return
             }
 
@@ -460,6 +511,7 @@ class CameraHelper(
             cameraDevice?.close()
             cameraDevice = null
             isOpened = false
+            videoRecorder = null
             mediaRecorder?.release()
             mediaRecorder = null
             stopBackgroundThread()
