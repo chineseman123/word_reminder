@@ -249,6 +249,11 @@ class MirrorVideoRecorder(
             Log.w(TAG, "audioRecord.stop failed", e)
         }
 
+        // 等 GL 线程把手上这一帧画完，再结束编码，避免 EOS 之后还提交帧
+        val glIdle = CountDownLatch(1)
+        glHandler.post { glIdle.countDown() }
+        runCatching { glIdle.await(800, TimeUnit.MILLISECONDS) }
+
         try {
             if (started) videoCodec.signalEndOfInputStream()
         } catch (e: Exception) {

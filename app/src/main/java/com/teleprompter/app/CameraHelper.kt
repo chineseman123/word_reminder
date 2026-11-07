@@ -421,6 +421,14 @@ class CameraHelper(
 
         // 结束编码、封装、写相册都比较耗时，放后台线程，避免主线程卡住
         backgroundHandler?.post {
+            // 先关掉录制会话，避免摄像头继续往即将释放的 Surface 送帧
+            try {
+                captureSession?.close()
+                captureSession = null
+            } catch (e: Exception) {
+                Log.w(TAG, "Error closing recording session", e)
+            }
+
             try {
                 recorder?.stop()
             } catch (e: Exception) {
