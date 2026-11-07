@@ -48,11 +48,12 @@ class MirrorRecorder(
 
     private var positionHandle = 0
     private var texCoordHandle = 0
-    private var texMatrixHandle = 0
     private var flipHandle = 0
     private var textureHandle = 0
 
-    private val texMatrix = FloatArray(16)
+    /** 首帧时间戳做基准，送进编码器的 PTS 从 0 开始 */
+    private var baseTimestampNs = 0L
+    private var wallStartNs = 0L
 
     /** 采样坐标翻转方向：纵向翻转对应竖屏输出下画面左右镜像 */
     private val flipVector =
@@ -122,8 +123,16 @@ class MirrorRecorder(
     }
 
     private fun onFrameAvailable() {
+        val st = surfaceTexture ?: return
+        // 即使还没开始录制也要把帧取出来，保证缓冲区队列不被塞满
+        try {
+            st.updateTexImage()
+        } catch (e: Exception) {
+            Log.e(TAG, "updateTexImage failed", e)
+            return
+        }
         if (!rendering) return
-        drawFrame()
+        drawFrame(st)
     }
 
     private fun setup() {
@@ -179,7 +188,6 @@ class MirrorRecorder(
             }
             positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
             texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
-            texMatrixHandle = GLES20.glGetUniformLocation(program, "uTexMatrix")
             flipHandle = GLES20.glGetUniformLocation(program, "uFlip")
             textureHandle = GLES20.glGetUniformLocation(program, "sTexture")
 
@@ -200,12 +208,8 @@ class MirrorRecorder(
         }
     }
 
-    private fun drawFrame() {
-        val st = surfaceTexture ?: return
+    private fun drawFrame(st: SurfaceTexture) {
         try {
-            st.updateTexImage()
-            st.getTransformMatrix(texMatrix)
-
             GLES20.glViewport(0, 0, width, height)
             GLES20.glClearColor(0f, 0f, 0f, 1f)
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
@@ -215,7 +219,6 @@ class MirrorRecorder(
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
             GLES20.glUniform1i(textureHandle, 0)
-            GLES20.glUniformMatrix4fv(texMatrixHandle, 1, false, texMatrix, 0)
             GLES20.glUniform2f(flipHandle, flipVector[0], flipVector[1])
 
             quadBuffer.position(0)
@@ -236,8 +239,18 @@ class MirrorRecorder(
             GLES20.glDisableVertexAttribArray(texCoordHandle)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
 
-            // 用摄像头帧时间戳给编码器计时，保证帧率与录制时长准确
-            EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, st.timestamp)
+            // PTS 必须以首帧为 0 点，直接送开机时间会让编码器算出的时长完全不对
+            val ptsNs: Long
+            val ts = st.timestamp
+            if (ts > 0) {
+                if (baseTimestampNs == 0L) baseTimestampNs = ts
+                ptsNs = ts - baseTimestampNs
+            } else {
+                val now = System.nanoTime()
+                if (wallStartNs == 0L) wallStartNs = now
+                ptsNs = now - wallStartNs
+            }
+            EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, ptsNs)
             if (!EGL14.eglSwapBuffers(eglDisplay, eglSurface)) {
                 Log.w(TAG, "eglSwapBuffers failed: ${EGL14.eglGetError()}")
             }
@@ -381,11 +394,10 @@ class MirrorRecorder(
         const val VERTEX_SHADER = """
             attribute vec2 aPosition;
             attribute vec2 aTexCoord;
-            uniform mat4 uTexMatrix;
             varying vec2 vTexCoord;
             void main() {
                 gl_Position = vec4(aPosition, 0.0, 1.0);
-                vTexCoord = (uTexMatrix * vec4(aTexCoord, 0.0, 1.0)).xy;
+                vTexCoord = aTexCoord;
             }
         """
 
