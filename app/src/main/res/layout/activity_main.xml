@@ -255,6 +255,44 @@
 
         </LinearLayout>
 
+        <!-- Subtitle background shade control -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="背景"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp" />
+
+            <SeekBar
+                android:id="@+id/seekBg"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:max="100"
+                android:progress="25"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp" />
+
+            <TextView
+                android:id="@+id/txtBg"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="25%"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:minWidth="38dp"
+                android:gravity="center" />
+
+        </LinearLayout>
+
         <!-- Record button -->
         <LinearLayout
             android:layout_width="match_parent"
@@ -335,6 +373,15 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="历史"
+                android:backgroundTint="#FF333355"
+                android:textColor="#FFFFFF"
+                android:layout_marginEnd="8dp" />
+
+            <Button
+                android:id="@+id/btnSpeechTest"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="语音测试"
                 android:backgroundTint="#FF333355"
                 android:textColor="#FFFFFF"
                 android:layout_marginEnd="8dp" />

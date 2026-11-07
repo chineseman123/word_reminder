@@ -1,12 +1,15 @@
 package com.teleprompter.app
 
+import android.graphics.Color
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.MotionEvent
 import android.view.TextureView
 import android.view.View
+import android.view.ViewConfiguration
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -16,6 +19,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.math.abs
+import kotlin.math.hypot
 import org.json.JSONArray
 
 
@@ -48,6 +52,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnCancelEdit: Button
     private lateinit var seekSpeed: SeekBar
     private lateinit var txtTimer: TextView
+    private lateinit var seekBg: SeekBar
+    private lateinit var txtBg: TextView
 
     // Camera & Recording
     private var cameraHelper: CameraHelper? = null
@@ -59,6 +65,7 @@ class MainActivity : AppCompatActivity() {
     // Teleprompter state
     private var fontSize = 22f
     private var textOpacity = 80  // 0-100 percent
+    private var bgAlpha = 25      // 字幕背景灰度 0-100
     private var scrollSpeed = 3
     private var isScrolling = false
     private var scrollHandler: Handler? = null
@@ -106,11 +113,32 @@ class MainActivity : AppCompatActivity() {
         btnCancelEdit = findViewById(R.id.btnCancelEdit)
         seekSpeed = findViewById(R.id.seekSpeed)
         txtTimer = findViewById(R.id.txtTimer)
+        seekBg = findViewById(R.id.seekBg)
+        txtBg = findViewById(R.id.txtBg)
 
         // 恢复上次保存的文案，避免每次打开都被新手介绍覆盖
-        val saved = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_CONTENT, null)
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val saved = prefs.getString(KEY_CONTENT, null)
         if (saved != null) {
             teleprompterContent = saved
+        }
+
+        // 恢复字幕背景灰度 + 上次拖放的位置和大小
+        bgAlpha = prefs.getInt(KEY_BG_ALPHA, 25)
+        seekBg.progress = bgAlpha
+        txtBg.text = "$bgAlpha%"
+        applySubtitleBackground()
+        teleprompterScroll.post {
+            val pw = prefs.getInt(KEY_PANEL_W, 0)
+            val ph = prefs.getInt(KEY_PANEL_H, 0)
+            if (pw > 0 && ph > 0) {
+                val lp = teleprompterScroll.layoutParams
+                lp.width = pw
+                lp.height = ph
+                teleprompterScroll.layoutParams = lp
+            }
+            teleprompterScroll.translationX = prefs.getFloat(KEY_PANEL_X, 0f)
+            teleprompterScroll.translationY = prefs.getFloat(KEY_PANEL_Y, 0f)
         }
 
         // 初始化数值显示
@@ -315,6 +343,20 @@ class MainActivity : AppCompatActivity() {
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
 
+        // Subtitle background shade
+        seekBg.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                bgAlpha = progress
+                txtBg.text = "$progress%"
+                applySubtitleBackground()
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putInt(KEY_BG_ALPHA, bgAlpha).apply()
+            }
+        })
+
         // Play/Pause scroll
         btnPlayPause.setOnClickListener {
             if (isScrolling) {
@@ -344,6 +386,9 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnHistoryEdit).setOnClickListener {
             showScriptHistory()
         }
+        findViewById<Button>(R.id.btnSpeechTest).setOnClickListener {
+            testSpeechRecognition()
+        }
 
         // Tap to show/hide controls during recording
         cameraPreview.setOnClickListener {
@@ -352,13 +397,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Long press on teleprompter area to show controls during recording
-        teleprompterScroll.setOnTouchListener { v, event ->
-            if (isRecording) {
-                toggleControlsVisibility()
-            }
-            v.performClick()
-        }
+        // 字幕块手势：拖动移动 / 双指缩放 / 竖滑滚动文字 / 单击切换控制栏
+        setupTeleprompterGestures()
     }
 
     private fun showEditPanel() {
@@ -414,10 +454,201 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    // ---- 语音识别可用性验证 ----
+    private fun testSpeechRecognition() {
+        if (!android.speech.SpeechRecognizer.isRecognitionAvailable(this)) {
+            Toast.makeText(this, "此设备不支持系统语音识别（可能缺少语音服务）", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val resultView = TextView(this).apply {
+            setPadding(48, 32, 48, 32)
+            textSize = 16f
+            text = "准备中..."
+        }
+        var sr: android.speech.SpeechRecognizer? = null
+        val dialog = android.app.AlertDialog.Builder(this)
+            .setTitle("语音识别测试")
+            .setView(resultView)
+            .setNegativeButton("关闭", null)
+            .create()
+        dialog.setOnDismissListener {
+            sr?.stopListening()
+            sr?.destroy()
+            sr = null
+        }
+        dialog.show()
+
+        val recognizer = android.speech.SpeechRecognizer.createSpeechRecognizer(this)
+        sr = recognizer
+        val intent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
+            putExtra(android.speech.RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(android.speech.RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+        }
+        recognizer.setRecognitionListener(object : android.speech.RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) { resultView.text = "请开始说话…" }
+            override fun onBeginningOfSpeech() { resultView.text = "聆听中…" }
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() { resultView.text = "识别中…" }
+            override fun onError(error: Int) {
+                resultView.text = "识别失败（错误码 $error）\n\n" + when (error) {
+                    android.speech.SpeechRecognizer.ERROR_NO_MATCH,
+                    android.speech.SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "没听清或没检测到说话，关闭后重试"
+                    android.speech.SpeechRecognizer.ERROR_CLIENT -> "设备语音服务异常（部分国产机在线识别不可用）"
+                    android.speech.SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "缺少录音权限"
+                    android.speech.SpeechRecognizer.ERROR_NETWORK,
+                    android.speech.SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "网络问题（在线识别需联网）"
+                    android.speech.SpeechRecognizer.ERROR_AUDIO -> "录音失败"
+                    else -> "请重试"
+                }
+            }
+            override fun onResults(results: Bundle?) {
+                val matches = results?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
+                resultView.text = "识别成功 ✓\n\n${matches?.firstOrNull() ?: "（空）"}"
+            }
+            override fun onPartialResults(partialResults: Bundle?) {
+                val matches = partialResults?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
+                if (!matches.isNullOrEmpty()) resultView.text = "识别中：${matches[0]}"
+            }
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+        try {
+            recognizer.startListening(intent)
+        } catch (e: Exception) {
+            resultView.text = "启动识别失败：${e.message}"
+        }
+    }
+
     private fun saveTeleprompterContent() {
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
             .putString(KEY_CONTENT, teleprompterContent)
             .apply()
+    }
+
+    // ---- 字幕背景：灰度 + 可拖拽/缩放 ----
+
+    private fun applySubtitleBackground() {
+        val a = (bgAlpha * 255 / 100).coerceIn(0, 255)
+        teleprompterScroll.setBackgroundColor(Color.argb(a, 128, 128, 128))
+    }
+
+    private fun savePanelGeometry() {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putFloat(KEY_PANEL_X, teleprompterScroll.translationX)
+            .putFloat(KEY_PANEL_Y, teleprompterScroll.translationY)
+            .putInt(KEY_PANEL_W, teleprompterScroll.width)
+            .putInt(KEY_PANEL_H, teleprompterScroll.height)
+            .apply()
+    }
+
+    /**
+     * 字幕块手势：
+     * - 单指横向拖动 → 移动字幕块位置（随后 X/Y 都跟随手指）
+     * - 双指捏合 → 缩放字幕块宽高
+     * - 单指竖向滑动 → 交给 ScrollView 滚动文字（保留原有手动滚动）
+     * - 录制时单击 → 切换控制栏显隐
+     */
+    private fun setupTeleprompterGestures() {
+        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
+        var mode = 0  // 0=未判定 1=拖动 2=滚动文字 3=捏合缩放 4=捏合后剩余手指(忽略)
+        var downX = 0f
+        var downY = 0f
+        var lastX = 0f
+        var lastY = 0f
+        var pinchStartDist = 0f
+        var pinchStartW = 0
+        var pinchStartH = 0
+
+        teleprompterScroll.setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    mode = 0
+                    downX = event.rawX
+                    downY = event.rawY
+                    lastX = event.rawX
+                    lastY = event.rawY
+                    false
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    if (event.pointerCount == 2) {
+                        mode = 3
+                        pinchStartDist = hypot(
+                            event.getX(1) - event.getX(0),
+                            event.getY(1) - event.getY(0)
+                        )
+                        pinchStartW = v.width
+                        pinchStartH = v.height
+                    }
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> when (mode) {
+                    3 -> {
+                        if (event.pointerCount >= 2 && pinchStartDist > 0) {
+                            val d = hypot(
+                                event.getX(1) - event.getX(0),
+                                event.getY(1) - event.getY(0)
+                            )
+                            val scale = (d / pinchStartDist).coerceIn(0.5f, 3f)
+                            val parent = v.parent as View
+                            val lp = v.layoutParams
+                            lp.width = (pinchStartW * scale).toInt()
+                                .coerceIn(parent.width / 3, parent.width)
+                            lp.height = (pinchStartH * scale).toInt()
+                                .coerceIn((120 * resources.displayMetrics.density).toInt(), parent.height * 7 / 10)
+                            v.layoutParams = lp
+                        }
+                        true
+                    }
+                    2, 4 -> false  // 竖向滚动文字 / 捏合后剩余手指，交给 ScrollView
+                    else -> {
+                        val dx = event.rawX - downX
+                        val dy = event.rawY - downY
+                        if (mode == 0 && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
+                            mode = if (abs(dy) > abs(dx) * 1.5f) 2 else 1
+                        }
+                        if (mode == 1) {
+                            val parent = v.parent as View
+                            v.translationX = (v.translationX + event.rawX - lastX)
+                                .coerceIn(-v.left.toFloat(), (parent.width - v.left - v.width).toFloat())
+                            v.translationY = (v.translationY + event.rawY - lastY)
+                                .coerceIn(-v.top.toFloat(), (parent.height - v.top - v.height).toFloat())
+                        }
+                        lastX = event.rawX
+                        lastY = event.rawY
+                        mode == 1
+                    }
+                }
+                MotionEvent.ACTION_POINTER_UP -> {
+                    if (mode == 3 && event.pointerCount <= 2) {
+                        savePanelGeometry()
+                        mode = 4  // 避免剩余手指继续移动造成跳动
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> when (mode) {
+                    1 -> {
+                        savePanelGeometry()
+                        true
+                    }
+                    0 -> {
+                        // 单击：录制时切换控制栏显隐
+                        if (isRecording) {
+                            toggleControlsVisibility()
+                        }
+                        false
+                    }
+                    else -> false
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    if (mode == 1) savePanelGeometry()
+                    false
+                }
+                else -> false
+            }
+        }
     }
 
     // ==================== Recording ====================
@@ -576,5 +807,10 @@ class MainActivity : AppCompatActivity() {
     private companion object {
         const val PREFS_NAME = "teleprompter_prefs"
         const val KEY_CONTENT = "script_content"
+        const val KEY_BG_ALPHA = "bg_alpha"
+        const val KEY_PANEL_X = "panel_tx"
+        const val KEY_PANEL_Y = "panel_ty"
+        const val KEY_PANEL_W = "panel_w"
+        const val KEY_PANEL_H = "panel_h"
     }
 }
