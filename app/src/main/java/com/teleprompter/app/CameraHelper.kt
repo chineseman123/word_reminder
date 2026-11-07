@@ -22,7 +22,6 @@ class CameraHelper(
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
     private var mediaRecorder: MediaRecorder? = null
-    private var mirrorRecorder: MirrorRecorder? = null
 
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
@@ -312,29 +311,8 @@ class CameraHelper(
             surfaceTexture.setDefaultBufferSize(sensorWidth, sensorHeight)
             val previewSurface = Surface(surfaceTexture)
 
-            // 不少机型的前置摄像头在 HAL 层就输出镜像画面，MediaRecorder 会原样编码，
-            // 导致录出来的视频左右翻转。这里在摄像头和编码器之间插入一层 GL 翻转：
-            //   前置摄像头 -> SurfaceTexture -> GL 翻转 -> MediaRecorder 编码 Surface
-            // 若某台设备录出来变成上下颠倒，把下面 flipVertical 改成 false 即可。
-            val mirror = try {
-                MirrorRecorder(
-                    encoderSurface = recorder.surface,
-                    width = sensorWidth,
-                    height = sensorHeight,
-                    flipVertical = true
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "MirrorRecorder init failed", e)
-                null
-            }
-            val recordTarget: Surface = if (mirror != null && mirror.isReady && mirror.inputSurface != null) {
-                mirrorRecorder = mirror
-                mirror.inputSurface!!
-            } else {
-                mirror?.stop()
-                Log.w(TAG, "MirrorRecorder unavailable, fallback to direct recording")
-                recorder.surface
-            }
+            // 录制直接写入 MediaRecorder 的 Surface（保持原有稳定路径）
+            val recordTarget: Surface = recorder.surface
 
             // Create capture session with both surfaces
             val captureRequestBuilder = cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
@@ -359,8 +337,6 @@ class CameraHelper(
                             Handler(context.mainLooper).post {
                                 try {
                                     recorder.start()
-                                    // 编码器启动后再开始送帧，避免首帧写入无效 Surface
-                                    mirrorRecorder?.startRendering()
                                     isRecording = true
                                     currentVideoPath = outputPath
                                     Log.d(TAG, "Recording started successfully: $outputPath")
@@ -402,14 +378,6 @@ class CameraHelper(
         isRecording = false
 
         val savedPath = currentVideoPath
-
-        // 先停送帧，再停编码器，避免 MediaRecorder 收到残缺帧
-        try {
-            mirrorRecorder?.stop()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping mirror recorder", e)
-        }
-        mirrorRecorder = null
 
         try {
             mediaRecorder?.apply {
@@ -492,8 +460,6 @@ class CameraHelper(
             cameraDevice?.close()
             cameraDevice = null
             isOpened = false
-            mirrorRecorder?.stop()
-            mirrorRecorder = null
             mediaRecorder?.release()
             mediaRecorder = null
             stopBackgroundThread()
