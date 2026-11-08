@@ -54,8 +54,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var txtTimer: TextView
     private lateinit var seekBg: SeekBar
     private lateinit var txtBg: TextView
-    private lateinit var seekWhiten: SeekBar
-    private lateinit var txtWhiten: TextView
     private lateinit var seekSmooth: SeekBar
     private lateinit var txtSmooth: TextView
     private lateinit var btnPanelHandle: ImageView
@@ -71,9 +69,9 @@ class MainActivity : AppCompatActivity() {
     private var fontSize = 22f
     private var textOpacity = 80  // 0-100 percent
     private var bgAlpha = 25      // 字幕背景灰度 0-100
-    private var beautyWhiten = 0  // 美白强度 0-100
     private var beautySmooth = 0  // 磨皮强度 0-100
-    private var scrollSpeed = 3
+    private var scrollSpeed = 6   // 速度档位 0-12，实际滚动速度=档位/2（对应旧 0-6 档，精度翻倍）
+    private var scrollRemainder = 0f  // 半档速度的小数累积器
     private var isScrolling = false
     private var scrollHandler: Handler? = null
     private var scrollRunnable: Runnable? = null
@@ -122,8 +120,6 @@ class MainActivity : AppCompatActivity() {
         txtTimer = findViewById(R.id.txtTimer)
         seekBg = findViewById(R.id.seekBg)
         txtBg = findViewById(R.id.txtBg)
-        seekWhiten = findViewById(R.id.seekWhiten)
-        txtWhiten = findViewById(R.id.txtWhiten)
         seekSmooth = findViewById(R.id.seekSmooth)
         txtSmooth = findViewById(R.id.txtSmooth)
         btnPanelHandle = findViewById(R.id.btnPanelHandle)
@@ -141,11 +137,8 @@ class MainActivity : AppCompatActivity() {
         txtBg.text = "$bgAlpha%"
         applySubtitleBackground()
 
-        // 恢复美颜强度
-        beautyWhiten = prefs.getInt(KEY_BEAUTY_WHITEN, 0)
+        // 恢复磨皮强度
         beautySmooth = prefs.getInt(KEY_BEAUTY_SMOOTH, 0)
-        seekWhiten.progress = beautyWhiten
-        txtWhiten.text = "$beautyWhiten%"
         seekSmooth.progress = beautySmooth
         txtSmooth.text = "$beautySmooth%"
 
@@ -225,8 +218,8 @@ class MainActivity : AppCompatActivity() {
             cameraHelper?.close()
         }
         cameraHelper = CameraHelper(this, cameraPreview)
-        // CameraHelper 重建后恢复美颜参数（内部会同步给预览/录制两条 GL 管线）
-        cameraHelper?.setBeauty(beautyWhiten / 100f, beautySmooth / 100f)
+        // CameraHelper 重建后恢复磨皮参数（内部会同步给预览/录制两条 GL 管线）
+        cameraHelper?.setSmoothing(beautySmooth / 100f)
         // 录像启动失败（如会话配置失败）时恢复界面状态
         cameraHelper?.onRecordingStopped = { path ->
             if (path == null && isRecording) {
@@ -402,26 +395,12 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        // 美颜：美白（手动可调，预览/录制实时生效）
-        seekWhiten.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                beautyWhiten = progress
-                txtWhiten.text = "$progress%"
-                cameraHelper?.setBeauty(beautyWhiten / 100f, beautySmooth / 100f)
-            }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {
-                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                    .putInt(KEY_BEAUTY_WHITEN, beautyWhiten).apply()
-            }
-        })
-
         // 美颜：磨皮（祛痘/黑头淡化，依赖人脸检测，只作用于人脸区域）
         seekSmooth.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 beautySmooth = progress
                 txtSmooth.text = "$progress%"
-                cameraHelper?.setBeauty(beautyWhiten / 100f, beautySmooth / 100f)
+                cameraHelper?.setSmoothing(beautySmooth / 100f)
                 if (fromUser && progress > 0 && cameraHelper?.faceDetectSupported == false) {
                     Toast.makeText(this@MainActivity, "本机不支持人脸检测，磨皮可能不生效", Toast.LENGTH_SHORT).show()
                 }
@@ -865,7 +844,13 @@ class MainActivity : AppCompatActivity() {
         scrollRunnable = object : Runnable {
             override fun run() {
                 if (isScrolling) {
-                    teleprompterScroll.smoothScrollBy(0, scrollSpeed)
+                    // 档位/2 = 每 50ms 滚动像素，小数部分累积到下次，保证半档速度平滑
+                    scrollRemainder += scrollSpeed / 2f
+                    val px = scrollRemainder.toInt()
+                    if (px > 0) {
+                        teleprompterScroll.smoothScrollBy(0, px)
+                        scrollRemainder -= px
+                    }
                     scrollHandler?.postDelayed(this, 50)
                 }
             }
@@ -947,7 +932,6 @@ class MainActivity : AppCompatActivity() {
         const val KEY_PANEL_Y = "panel_ty"
         const val KEY_PANEL_W = "panel_w"
         const val KEY_PANEL_H = "panel_h"
-        const val KEY_BEAUTY_WHITEN = "beauty_whiten"
         const val KEY_BEAUTY_SMOOTH = "beauty_smooth"
     }
 }

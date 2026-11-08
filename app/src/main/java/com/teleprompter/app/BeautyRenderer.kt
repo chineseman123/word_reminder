@@ -57,7 +57,6 @@ class BeautyRenderer(
             uniform mat4 uSTMatrix;
             uniform vec2 uFlip;
             uniform vec4 uFace;
-            uniform float uWhiten;
             uniform float uSmooth;
 
             // 8 邻域采样，颜色与中心差异越小权重越大（类双边滤波，保住五官/背景边缘）
@@ -105,16 +104,6 @@ class BeautyRenderer(
                     color.rgb = mix(color.rgb, blurred, clamp(uSmooth * mask, 0.0, 1.0));
                 }
 
-                // 美白：检测到人脸只美白人脸；检测不到时全局提亮（可手动调）
-                if (uWhiten > 0.001) {
-                    float w = uWhiten * (hasFace ? mask : 1.0);
-                    if (w > 0.001) {
-                        vec3 c0 = color.rgb;
-                        vec3 c1 = c0 + (vec3(1.0) - c0) * (0.40 * w) + vec3(0.05 * w);
-                        color.rgb = clamp(mix(c0, c1, w), 0.0, 1.0);
-                    }
-                }
-
                 gl_FragColor = color;
             }
         """
@@ -143,7 +132,6 @@ class BeautyRenderer(
     private var textureHandle = 0
     private var stMatrixHandle = 0
     private var faceHandle = 0
-    private var whitenHandle = 0
     private var smoothHandle = 0
 
     private lateinit var surfaceTexture: SurfaceTexture
@@ -164,11 +152,9 @@ class BeautyRenderer(
         .asFloatBuffer()
         .apply { put(TEX_COORDS); position(0) }
 
-    // 预览保持镜像（自拍视角）。uv.x = abs(1 - tc.x) 即水平翻转
-    private val flipVector = floatArrayOf(1f, 0f)
-
-    @Volatile
-    private var whiten = 0f
+    // 预览保持镜像（自拍视角）。实测 v 轴管左右、u 轴管上下，
+    // 所以镜像是翻 v 轴（翻 u 轴会上下颠倒），与录制管线 flip=(0,0) 相对称
+    private val flipVector = floatArrayOf(0f, 1f)
 
     @Volatile
     private var smooth = 0f
@@ -203,9 +189,8 @@ class BeautyRenderer(
 
     // ==================== 对外接口 ====================
 
-    /** whiten / smooth: 0.0 ~ 1.0 */
-    fun setBeauty(whiten: Float, smooth: Float) {
-        this.whiten = whiten.coerceIn(0f, 1f)
+    /** 磨皮强度 0.0 ~ 1.0 */
+    fun setSmoothing(smooth: Float) {
         this.smooth = smooth.coerceIn(0f, 1f)
     }
 
@@ -314,7 +299,6 @@ class BeautyRenderer(
         textureHandle = GLES20.glGetUniformLocation(program, "sTexture")
         stMatrixHandle = GLES20.glGetUniformLocation(program, "uSTMatrix")
         faceHandle = GLES20.glGetUniformLocation(program, "uFace")
-        whitenHandle = GLES20.glGetUniformLocation(program, "uWhiten")
         smoothHandle = GLES20.glGetUniformLocation(program, "uSmooth")
 
         val texture = SurfaceTexture(textureId).apply {
@@ -356,7 +340,6 @@ class BeautyRenderer(
 
             val face = faceRect
             GLES20.glUniform4f(faceHandle, face[0], face[1], face[2], face[3])
-            GLES20.glUniform1f(whitenHandle, whiten)
             GLES20.glUniform1f(smoothHandle, smooth)
 
             quadBuffer.position(0)

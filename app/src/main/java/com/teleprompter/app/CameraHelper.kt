@@ -56,7 +56,6 @@ class CameraHelper(
 
     // ---- 美颜 ----
     private var beautyRenderer: BeautyRenderer? = null
-    private var beautyWhiten = 0f
     private var beautySmooth = 0f
     private var faceDetectMode = CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_OFF
     var faceDetectSupported = false
@@ -282,7 +281,7 @@ class CameraHelper(
             // 渲染目标是 TextureView：缓冲区设成竖屏尺寸，避免画面二次拉伸
             viewSurfaceTexture.setDefaultBufferSize(portraitWidth, portraitHeight)
             val renderer = BeautyRenderer(viewSurfaceTexture, sensorWidth, sensorHeight)
-            renderer.setBeauty(beautyWhiten, beautySmooth)
+            renderer.setSmoothing(beautySmooth)
             smoothedFace?.let { renderer.setFaceRect(it) }
             beautyRenderer = renderer
             Log.d(TAG, "Beauty preview renderer created")
@@ -350,12 +349,11 @@ class CameraHelper(
         videoRecorder?.setFaceRect(rect)
     }
 
-    /** 设置美颜强度（0~1）。预览和录制同时生效，录制中也可实时调整 */
-    fun setBeauty(whiten: Float, smooth: Float) {
-        beautyWhiten = whiten.coerceIn(0f, 1f)
+    /** 设置磨皮强度（0~1）。预览和录制同时生效，录制中也可实时调整 */
+    fun setSmoothing(smooth: Float) {
         beautySmooth = smooth.coerceIn(0f, 1f)
-        beautyRenderer?.setBeauty(beautyWhiten, beautySmooth)
-        videoRecorder?.setBeauty(beautyWhiten, beautySmooth)
+        beautyRenderer?.setSmoothing(beautySmooth)
+        videoRecorder?.setSmoothing(beautySmooth)
     }
 
     fun updatePreview() {
@@ -438,8 +436,8 @@ class CameraHelper(
                     mirrorHorizontal = false
                 ).also {
                     videoRecorder = it
-                    // 录制管线同步当前美颜参数和人脸位置
-                    it.setBeauty(beautyWhiten, beautySmooth)
+                    // 录制管线同步当前磨皮参数和人脸位置
+                    it.setSmoothing(beautySmooth)
                     smoothedFace?.let { face -> it.setFaceRect(face) }
                 }
             } catch (e: Exception) {

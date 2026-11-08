@@ -105,7 +105,6 @@ class MirrorVideoRecorder(
     private var textureHandle = 0
     private var stMatrixHandle = 0
     private var faceHandle = 0
-    private var whitenHandle = 0
     private var smoothHandle = 0
 
     private lateinit var surfaceTexture: android.graphics.SurfaceTexture
@@ -133,17 +132,13 @@ class MirrorVideoRecorder(
     // ==================== 美颜参数（录制期间可实时调整） ====================
 
     @Volatile
-    private var whiten = 0f
-
-    @Volatile
     private var smooth = 0f
 
     @Volatile
     private var faceRect = BeautyRenderer.NO_FACE
 
-    /** whiten / smooth: 0.0 ~ 1.0 */
-    fun setBeauty(whiten: Float, smooth: Float) {
-        this.whiten = whiten.coerceIn(0f, 1f)
+    /** 磨皮强度 0.0 ~ 1.0 */
+    fun setSmoothing(smooth: Float) {
         this.smooth = smooth.coerceIn(0f, 1f)
     }
 
@@ -374,7 +369,6 @@ class MirrorVideoRecorder(
             textureHandle = GLES20.glGetUniformLocation(program, "sTexture")
             stMatrixHandle = GLES20.glGetUniformLocation(program, "uSTMatrix")
             faceHandle = GLES20.glGetUniformLocation(program, "uFace")
-            whitenHandle = GLES20.glGetUniformLocation(program, "uWhiten")
             smoothHandle = GLES20.glGetUniformLocation(program, "uSmooth")
 
             val texture = android.graphics.SurfaceTexture(textureId).apply {
@@ -426,7 +420,6 @@ class MirrorVideoRecorder(
 
             val face = faceRect
             GLES20.glUniform4f(faceHandle, face[0], face[1], face[2], face[3])
-            GLES20.glUniform1f(whitenHandle, whiten)
             GLES20.glUniform1f(smoothHandle, smooth)
 
             quadBuffer.position(0)
