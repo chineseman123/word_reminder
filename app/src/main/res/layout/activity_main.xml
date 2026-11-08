@@ -186,6 +186,20 @@
         android:tint="#FFFFFF"
         android:visibility="gone" />
 
+    <!-- 底部滑块区收起后浮在右下角，点一下重新展开（录制键保留，不受影响） -->
+    <ImageButton
+        android:id="@+id/btnExpandBottom"
+        android:layout_width="34dp"
+        android:layout_height="34dp"
+        android:layout_gravity="bottom|end"
+        android:layout_marginBottom="104dp"
+        android:layout_marginEnd="8dp"
+        android:src="@drawable/ic_arrow_up"
+        android:background="#80000000"
+        android:contentDescription="展开控制栏"
+        android:tint="#FFFFFF"
+        android:visibility="gone" />
+
     <!-- Bottom bar: record + scroll control -->
     <LinearLayout
         android:id="@+id/bottomBar"
@@ -195,6 +209,13 @@
         android:orientation="vertical"
         android:paddingBottom="20dp"
         android:background="#80000000">
+
+        <!-- 可收起的滑块区：速度/背景/磨皮 -->
+        <LinearLayout
+            android:id="@+id/bottomSliders"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
 
         <!-- Scroll speed control -->
         <LinearLayout
@@ -251,6 +272,16 @@
                 android:src="@drawable/ic_reset"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="回到顶部"
+                android:tint="#FFFFFF" />
+
+            <!-- 收起底部滑块区 -->
+            <ImageButton
+                android:id="@+id/btnCollapseBottom"
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:src="@drawable/ic_arrow_down"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="收起控制栏"
                 android:tint="#FFFFFF" />
 
         </LinearLayout>
@@ -331,6 +362,8 @@
 
         </LinearLayout>
 
+        </LinearLayout>
+
         <!-- Record button -->
         <LinearLayout
             android:layout_width="match_parent"
@@ -403,7 +436,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:gravity="end"
+            android:gravity="center_vertical"
             android:layout_marginTop="12dp">
 
             <Button
@@ -412,17 +445,12 @@
                 android:layout_height="wrap_content"
                 android:text="历史"
                 android:backgroundTint="#FF333355"
-                android:textColor="#FFFFFF"
-                android:layout_marginEnd="8dp" />
+                android:textColor="#FFFFFF" />
 
-            <Button
-                android:id="@+id/btnSpeechTest"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="语音测试"
-                android:backgroundTint="#FF333355"
-                android:textColor="#FFFFFF"
-                android:layout_marginEnd="8dp" />
+            <View
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
 
             <Button
                 android:id="@+id/btnCancelEdit"
@@ -430,7 +458,8 @@
                 android:layout_height="wrap_content"
                 android:text="取消"
                 android:backgroundTint="#FF333355"
-                android:textColor="#FFFFFF" />
+                android:textColor="#FFFFFF"
+                android:layout_marginEnd="8dp" />
 
             <Button
                 android:id="@+id/btnConfirmEdit"
@@ -438,8 +467,7 @@
                 android:layout_height="wrap_content"
                 android:text="确认"
                 android:backgroundTint="#FF0F3460"
-                android:textColor="#FFFFFF"
-                android:layout_marginStart="8dp" />
+                android:textColor="#FFFFFF" />
 
         </LinearLayout>
 

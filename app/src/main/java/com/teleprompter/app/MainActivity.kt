@@ -48,6 +48,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var txtSpeed: TextView
     private lateinit var btnCollapseTop: ImageButton
     private lateinit var btnExpandTop: ImageButton
+    private lateinit var bottomSliders: LinearLayout
+    private lateinit var btnCollapseBottom: ImageButton
+    private lateinit var btnExpandBottom: ImageButton
     private lateinit var btnConfirmEdit: Button
     private lateinit var btnCancelEdit: Button
     private lateinit var seekSpeed: SeekBar
@@ -114,6 +117,9 @@ class MainActivity : AppCompatActivity() {
         txtSpeed = findViewById(R.id.txtSpeed)
         btnCollapseTop = findViewById(R.id.btnCollapseTop)
         btnExpandTop = findViewById(R.id.btnExpandTop)
+        bottomSliders = findViewById(R.id.bottomSliders)
+        btnCollapseBottom = findViewById(R.id.btnCollapseBottom)
+        btnExpandBottom = findViewById(R.id.btnExpandBottom)
         btnConfirmEdit = findViewById(R.id.btnConfirmEdit)
         btnCancelEdit = findViewById(R.id.btnCancelEdit)
         seekSpeed = findViewById(R.id.seekSpeed)
@@ -229,7 +235,7 @@ class MainActivity : AppCompatActivity() {
                 stopTimer()
                 pauseScroll()
                 applyTopBarVisibility()
-                bottomBar.visibility = View.VISIBLE
+                applyBottomBarVisibility()
                 btnPanelHandle.visibility = View.VISIBLE
                 controlsVisible = true
             }
@@ -253,7 +259,14 @@ class MainActivity : AppCompatActivity() {
             // Wait for surface
             cameraPreview.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                 override fun onSurfaceTextureAvailable(surface: android.graphics.SurfaceTexture, width: Int, height: Int) {
-                    cameraHelper?.openFrontCamera()
+                    // surface 销毁时旧 helper 已被 close（后台线程已停），
+                    // 直接调 openFrontCamera 会发到死线程上永远开不了 → 黑屏，需整体重建
+                    val h = cameraHelper
+                    if (h == null || h.isClosed) {
+                        startCamera()
+                        return
+                    }
+                    h.openFrontCamera()
                     cameraPreview.postDelayed({
                         cameraHelper?.setZoom(currentZoom)
                     }, 500)
@@ -331,6 +344,10 @@ class MainActivity : AppCompatActivity() {
         // 顶部功能栏收起 / 展开
         btnCollapseTop.setOnClickListener { setTopBarCollapsed(true) }
         btnExpandTop.setOnClickListener { setTopBarCollapsed(false) }
+
+        // 底部滑块区（速度/背景/磨皮）收起 / 展开
+        btnCollapseBottom.setOnClickListener { setBottomBarCollapsed(true) }
+        btnExpandBottom.setOnClickListener { setBottomBarCollapsed(false) }
 
         // Font size controls
         btnFontUp.setOnClickListener {
@@ -479,9 +496,6 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnHistoryEdit).setOnClickListener {
             showScriptHistory()
         }
-        findViewById<Button>(R.id.btnSpeechTest).setOnClickListener {
-            testSpeechRecognition()
-        }
 
         // Tap to show/hide controls during recording
         cameraPreview.setOnClickListener {
@@ -500,37 +514,49 @@ class MainActivity : AppCompatActivity() {
         topBar.visibility = View.GONE
         bottomBar.visibility = View.GONE
         btnExpandTop.visibility = View.GONE
+        btnExpandBottom.visibility = View.GONE
         btnPanelHandle.visibility = View.GONE
     }
 
     private fun hideEditPanel() {
         editPanel.visibility = View.GONE
-        bottomBar.visibility = View.VISIBLE
+        applyBottomBarVisibility()
         btnPanelHandle.visibility = View.VISIBLE
         updatePanelHandle()
         applyTopBarVisibility()
         controlsVisible = true
     }
 
-    // ---- 台词本：保存/读取历史台词 ----
+    // ---- 台词本：书签式历史台词（带保存时间，可点选回填）----
     private fun saveScriptToHistory(content: String) {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return
         val list = loadScriptHistory().toMutableList()
-        list.remove(trimmed)          // 去重
-        list.add(0, trimmed)          // 最新在前
+        list.removeAll { it.second == trimmed }                 // 同内容去重，刷新到最新
+        list.add(0, System.currentTimeMillis() to trimmed)      // 最新在前
         val arr = JSONArray()
-        list.take(20).forEach { arr.put(it) }   // 最多保留 20 条
+        list.take(20).forEach { (time, text) ->                 // 最多保留 20 条
+            arr.put(org.json.JSONObject().apply {
+                put("time", time)
+                put("content", text)
+            })
+        }
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
             .putString("script_history", arr.toString()).apply()
     }
 
-    private fun loadScriptHistory(): List<String> {
+    /** 返回 (保存时间戳, 台词内容) 列表；兼容旧版纯字符串格式（时间显示为“早期记录”） */
+    private fun loadScriptHistory(): List<Pair<Long, String>> {
         val json = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             .getString("script_history", null) ?: return emptyList()
         return try {
             val arr = JSONArray(json)
-            (0 until arr.length()).map { arr.getString(it) }
+            (0 until arr.length()).map { i ->
+                when (val el = arr.get(i)) {
+                    is org.json.JSONObject -> el.optLong("time", 0L) to el.optString("content")
+                    else -> 0L to el.toString()
+                }
+            }.filter { it.second.isNotBlank() }
         } catch (e: Exception) {
             emptyList()
         }
@@ -542,80 +568,40 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "暂无历史台词", Toast.LENGTH_SHORT).show()
             return
         }
-        val titles = history.map { it.replace("\n", " ").take(30) }.toTypedArray()
+        val fmt = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
+        val rows = history.map { (time, text) ->
+            mapOf(
+                "time" to if (time > 0) fmt.format(Date(time)) else "早期记录",
+                "text" to text.replace("\n", " ").take(40)
+            )
+        }
+        val adapter = SimpleAdapter(
+            this, rows,
+            android.R.layout.simple_list_item_2,
+            arrayOf("time", "text"),
+            intArrayOf(android.R.id.text1, android.R.id.text2)
+        )
         android.app.AlertDialog.Builder(this)
-            .setTitle("选择历史台词")
-            .setItems(titles) { _, which -> editText.setText(history[which]) }
+            .setTitle("历史台词（点选回填）")
+            .setAdapter(adapter) { _, which ->
+                editText.setText(history[which].second)
+            }
+            .setNeutralButton("一键清空") { _, _ -> confirmClearHistory() }
             .setNegativeButton("取消", null)
             .show()
     }
 
-    // ---- 语音识别可用性验证 ----
-    private fun testSpeechRecognition() {
-        if (!android.speech.SpeechRecognizer.isRecognitionAvailable(this)) {
-            Toast.makeText(this, "此设备不支持系统语音识别（可能缺少语音服务）", Toast.LENGTH_LONG).show()
-            return
-        }
-
-        val resultView = TextView(this).apply {
-            setPadding(48, 32, 48, 32)
-            textSize = 16f
-            text = "准备中..."
-        }
-        var sr: android.speech.SpeechRecognizer? = null
-        val dialog = android.app.AlertDialog.Builder(this)
-            .setTitle("语音识别测试")
-            .setView(resultView)
-            .setNegativeButton("关闭", null)
-            .create()
-        dialog.setOnDismissListener {
-            sr?.stopListening()
-            sr?.destroy()
-            sr = null
-        }
-        dialog.show()
-
-        val recognizer = android.speech.SpeechRecognizer.createSpeechRecognizer(this)
-        sr = recognizer
-        val intent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
-            putExtra(android.speech.RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(android.speech.RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-        }
-        recognizer.setRecognitionListener(object : android.speech.RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) { resultView.text = "请开始说话…" }
-            override fun onBeginningOfSpeech() { resultView.text = "聆听中…" }
-            override fun onRmsChanged(rmsdB: Float) {}
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() { resultView.text = "识别中…" }
-            override fun onError(error: Int) {
-                resultView.text = "识别失败（错误码 $error）\n\n" + when (error) {
-                    android.speech.SpeechRecognizer.ERROR_NO_MATCH,
-                    android.speech.SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "没听清或没检测到说话，关闭后重试"
-                    android.speech.SpeechRecognizer.ERROR_CLIENT -> "设备语音服务异常（部分国产机在线识别不可用）"
-                    android.speech.SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "缺少录音权限"
-                    android.speech.SpeechRecognizer.ERROR_NETWORK,
-                    android.speech.SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "网络问题（在线识别需联网）"
-                    android.speech.SpeechRecognizer.ERROR_AUDIO -> "录音失败"
-                    else -> "请重试"
-                }
+    private fun confirmClearHistory() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("清空历史台词")
+            .setMessage("确定要删除全部历史台词吗？此操作不可恢复。")
+            .setPositiveButton("清空") { _, _ ->
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .remove("script_history").apply()
+                Toast.makeText(this, "历史台词已清空", Toast.LENGTH_SHORT).show()
             }
-            override fun onResults(results: Bundle?) {
-                val matches = results?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
-                resultView.text = "识别成功 ✓\n\n${matches?.firstOrNull() ?: "（空）"}"
-            }
-            override fun onPartialResults(partialResults: Bundle?) {
-                val matches = partialResults?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
-                if (!matches.isNullOrEmpty()) resultView.text = "识别中：${matches[0]}"
-            }
-            override fun onEvent(eventType: Int, params: Bundle?) {}
-        })
-        try {
-            recognizer.startListening(intent)
-        } catch (e: Exception) {
-            resultView.text = "启动识别失败：${e.message}"
-        }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun saveTeleprompterContent() {
@@ -786,6 +772,7 @@ class MainActivity : AppCompatActivity() {
                     topBar.visibility = View.GONE
                     bottomBar.visibility = View.GONE
                     btnExpandTop.visibility = View.GONE
+                    btnExpandBottom.visibility = View.GONE
                     btnPanelHandle.visibility = View.GONE
                 }
             }, 3000)
@@ -802,7 +789,7 @@ class MainActivity : AppCompatActivity() {
         stopTimer()
         pauseScroll()
         applyTopBarVisibility()
-        bottomBar.visibility = View.VISIBLE
+        applyBottomBarVisibility()
         btnPanelHandle.visibility = View.VISIBLE
         updatePanelHandle()
         controlsVisible = true
@@ -872,18 +859,20 @@ class MainActivity : AppCompatActivity() {
 
     private var controlsVisible = true
     private var isTopBarCollapsed = false
+    private var isBottomBarCollapsed = false
 
     private fun toggleControlsVisibility() {
         controlsVisible = !controlsVisible
         if (controlsVisible) {
             applyTopBarVisibility()
-            bottomBar.visibility = View.VISIBLE
+            applyBottomBarVisibility()
             btnPanelHandle.visibility = View.VISIBLE
             updatePanelHandle()
         } else {
             topBar.visibility = View.GONE
             bottomBar.visibility = View.GONE
             btnExpandTop.visibility = View.GONE
+            btnExpandBottom.visibility = View.GONE
             btnPanelHandle.visibility = View.GONE
         }
     }
@@ -893,12 +882,26 @@ class MainActivity : AppCompatActivity() {
         isTopBarCollapsed = collapsed
         controlsVisible = true
         applyTopBarVisibility()
-        bottomBar.visibility = View.VISIBLE
+        applyBottomBarVisibility()
+    }
+
+    /** 收起 / 展开底部滑块区：收起后只留右下角一个小按钮，录制键保留可用 */
+    private fun setBottomBarCollapsed(collapsed: Boolean) {
+        isBottomBarCollapsed = collapsed
+        controlsVisible = true
+        applyTopBarVisibility()
+        applyBottomBarVisibility()
     }
 
     private fun applyTopBarVisibility() {
         topBar.visibility = if (isTopBarCollapsed) View.GONE else View.VISIBLE
         btnExpandTop.visibility = if (isTopBarCollapsed) View.VISIBLE else View.GONE
+    }
+
+    private fun applyBottomBarVisibility() {
+        bottomBar.visibility = View.VISIBLE
+        bottomSliders.visibility = if (isBottomBarCollapsed) View.GONE else View.VISIBLE
+        btnExpandBottom.visibility = if (isBottomBarCollapsed) View.VISIBLE else View.GONE
     }
 
     // ==================== Lifecycle ====================
@@ -923,7 +926,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (cameraHelper == null || !cameraHelper!!.isOpened) {
+        // 只在 helper 已被关闭（onPause/surface销毁/相机出错）时才重建；
+        // 不能看 isOpened：相机异步打开中也是 false，重复 startCamera 会让
+        // 两个 helper 抢同一摄像头，后开的那个失败 → 黑屏只能重启
+        if (cameraHelper == null || cameraHelper!!.isClosed) {
             startCamera()
         }
     }

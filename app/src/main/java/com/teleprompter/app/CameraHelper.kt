@@ -32,6 +32,15 @@ class CameraHelper(
     var isOpened = false
         private set
 
+    /** close() 后置 true：后台线程已停，任何异步回调都不能再用这个实例 */
+    @Volatile
+    var isClosed = false
+        private set
+
+    /** openCamera 已发出、回调未返回期间为 true，防止重复打开同一摄像头 */
+    @Volatile
+    private var openInProgress = false
+
     private var currentVideoPath: String? = null
     private var frontCameraId: String? = null
 
@@ -96,6 +105,10 @@ class CameraHelper(
     }
 
     fun openFrontCamera() {
+        if (isClosed || isOpened || openInProgress) {
+            Log.d(TAG, "openFrontCamera skipped: closed=$isClosed opened=$isOpened inProgress=$openInProgress")
+            return
+        }
         cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
         try {
@@ -182,9 +195,19 @@ class CameraHelper(
     }
 
     private fun openCameraDevice() {
+        if (isClosed || openInProgress) return
+        openInProgress = true
         try {
             cameraManager?.openCamera(frontCameraId!!, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
+                    openInProgress = false
+                    if (isClosed) {
+                        // 打开完成时实例已被关闭（后台线程已停）：直接放掉相机，
+                        // 不能 startPreview，否则占着摄像头让新实例打不开 → 黑屏
+                        Log.w(TAG, "Camera opened after helper closed, releasing it")
+                        camera.close()
+                        return
+                    }
                     Log.d(TAG, "Camera opened successfully: ${camera.id}")
                     cameraDevice = camera
                     isOpened = true
@@ -193,22 +216,27 @@ class CameraHelper(
 
                 override fun onDisconnected(camera: CameraDevice) {
                     Log.w(TAG, "Camera disconnected")
+                    openInProgress = false
                     camera.close()
                     cameraDevice = null
                     isOpened = false
+                    isClosed = true  // 让 onResume 重建整个 helper
                 }
 
                 override fun onError(camera: CameraDevice, error: Int) {
                     Log.e(TAG, "Camera open error: $error")
+                    openInProgress = false
                     camera.close()
                     cameraDevice = null
                     isOpened = false
+                    isClosed = true  // 让 onResume 重建整个 helper
                     Handler(context.mainLooper).post {
                         android.widget.Toast.makeText(context, "摄像头打开出错(错误码:$error)", android.widget.Toast.LENGTH_LONG).show()
                     }
                 }
             }, backgroundHandler)
         } catch (e: Exception) {
+            openInProgress = false
             Log.e(TAG, "Exception opening camera device", e)
         }
     }
@@ -357,7 +385,7 @@ class CameraHelper(
     }
 
     fun updatePreview() {
-        if (cameraDevice != null && isOpened) {
+        if (!isClosed && cameraDevice != null && isOpened) {
             startPreview()
         }
     }
@@ -678,6 +706,8 @@ class CameraHelper(
     }
 
     fun close() {
+        isClosed = true
+        openInProgress = false
         try {
             if (isRecording) {
                 stopRecording()
