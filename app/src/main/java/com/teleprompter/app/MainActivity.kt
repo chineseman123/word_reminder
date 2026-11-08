@@ -244,9 +244,8 @@ class MainActivity : AppCompatActivity() {
         // Default zoom 1.0x, applied when preview starts
         currentZoom = 1.0f
 
-        // Adjust TextureView aspect ratio to match camera preview
-        // This prevents the preview from being stretched/distorted
-        adjustPreviewAspectRatio()
+        // 预览始终铺满全屏：TextureView 保持 match_parent，
+        // 画面宽高比差异由 BeautyRenderer 居中裁切吸收（只裁不拉，无黑边）
 
         if (cameraPreview.isAvailable) {
             // Surface already ready, open camera immediately
@@ -273,55 +272,12 @@ class MainActivity : AppCompatActivity() {
                 }
                 override fun onSurfaceTextureSizeChanged(surface: android.graphics.SurfaceTexture, width: Int, height: Int) {
                     cameraHelper?.onViewSizeChanged(width, height)
-                    adjustPreviewAspectRatio()
                 }
                 override fun onSurfaceTextureDestroyed(surface: android.graphics.SurfaceTexture): Boolean {
                     cameraHelper?.close()
                     return true
                 }
                 override fun onSurfaceTextureUpdated(surface: android.graphics.SurfaceTexture) {}
-            }
-        }
-    }
-
-    /**
-     * Adjust the TextureView's dimensions to match the camera's portrait aspect ratio.
-     * Without this, the full-screen TextureView stretches the camera preview to fill
-     * the screen, causing the person to appear stretched/distorted.
-     * 
-     * We fit the preview to fill the screen width, and adjust the height to match
-     * the camera's portrait aspect ratio. If the calculated height is taller than the
-     * screen, we fill the screen entirely (camera aspect ratio is very close to screen ratio,
-     * so any slight mismatch is negligible). The key is ensuring the buffer ratio matches.
-     */
-    private fun adjustPreviewAspectRatio() {
-        val helper = cameraHelper ?: return
-        val portraitW = helper.portraitWidth
-        val portraitH = helper.portraitHeight
-        if (portraitW <= 0 || portraitH <= 0) return
-
-        cameraPreview.post {
-            val container = cameraPreview.parent as? android.view.ViewGroup ?: return@post
-            val containerW = container.width
-            val containerH = container.height
-            if (containerW <= 0 || containerH <= 0) return@post
-
-            // Camera portrait aspect ratio (e.g. 1080:1920 = 9:16)
-            val cameraRatio = portraitW.toFloat() / portraitH.toFloat()
-            // Container aspect ratio
-            val containerRatio = containerW.toFloat() / containerH.toFloat()
-
-            val params = cameraPreview.layoutParams
-            if (abs(containerRatio - cameraRatio) < 0.01f) {
-                // Ratios match closely enough, use match_parent
-                // No adjustment needed
-            } else {
-                // Fit width to container, calculate height from camera ratio
-                val previewW = containerW
-                val previewH = (containerW / cameraRatio).toInt()
-                params.width = previewW
-                params.height = previewH.coerceAtMost(containerH)
-                cameraPreview.layoutParams = params
             }
         }
     }
@@ -581,16 +537,24 @@ class MainActivity : AppCompatActivity() {
         val deleteW = 64 * density                       // 删除按钮露出的宽度
         val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
         val fmt = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
-        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val rowGap = (8 * density).toInt()
+        val cardRadius = 12 * density
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(rowGap, rowGap, rowGap, rowGap)
+        }
         val scroll = ScrollView(this).apply {
             addView(container)
-            setBackgroundColor(0xFF1F1F30.toInt())
+            setBackgroundColor(0xFF16162A.toInt())
         }
         val dialog = android.app.AlertDialog.Builder(this)
-            .setTitle("历史台词（点选回填 · 左滑删除）")
+            .setTitle("历史台词")
             .setView(scroll)
             .setNegativeButton("关闭", null)
             .show()
+        // 拉长窗口：高取屏幕 70%，宽取 92%，看起来像独立管理页
+        val dm = resources.displayMetrics
+        dialog.window?.setLayout((dm.widthPixels * 0.92f).toInt(), (dm.heightPixels * 0.7f).toInt())
 
         var openedRow: View? = null                     // 当前滑开露出删除按钮的行
 
@@ -609,14 +573,23 @@ class MainActivity : AppCompatActivity() {
                 setTextColor(Color.WHITE)
                 textSize = 14f
                 gravity = android.view.Gravity.CENTER
-                setBackgroundColor(0xFFD32F2F.toInt())
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(0xFFE05252.toInt())
+                    cornerRadii = floatArrayOf(
+                        0f, 0f, cardRadius, cardRadius,
+                        cardRadius, cardRadius, 0f, 0f
+                    )
+                }
                 layoutParams = FrameLayout.LayoutParams(
                     deleteW.toInt(), FrameLayout.LayoutParams.MATCH_PARENT, android.view.Gravity.END
                 )
             }
             val content = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setBackgroundColor(0xFF1F1F30.toInt())
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(0xFF262640.toInt())
+                    cornerRadius = cardRadius
+                }
                 setPadding((14 * density).toInt(), (10 * density).toInt(), (14 * density).toInt(), (10 * density).toInt())
                 layoutParams = FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT
@@ -625,14 +598,15 @@ class MainActivity : AppCompatActivity() {
             content.addView(TextView(this).apply {
                 text = if (item.first > 0) fmt.format(Date(item.first)) else "早期记录"
                 textSize = 11f
-                setTextColor(0xFF9E9E9E.toInt())
+                setTextColor(0xFF7C9EFF.toInt())
             })
             content.addView(TextView(this).apply {
                 text = item.second.replace("\n", " ").take(40)
                 textSize = 14f
-                setTextColor(Color.WHITE)
+                setTextColor(0xFFEDEDF5.toInt())
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(0, (4 * density).toInt(), 0, 0)
             })
 
             var downX = 0f
@@ -702,14 +676,10 @@ class MainActivity : AppCompatActivity() {
 
             rowRoot.addView(deleteBtn)
             rowRoot.addView(content)
-            container.addView(rowRoot)
-            // 行间分隔线
-            container.addView(View(this).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, 1
-                )
-                setBackgroundColor(0xFF38384A.toInt())
-            })
+            // 卡片间距
+            container.addView(rowRoot, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = rowGap })
         }
     }
 

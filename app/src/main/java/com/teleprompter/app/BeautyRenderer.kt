@@ -28,7 +28,7 @@ import java.util.concurrent.TimeUnit
  * 坐标为 buffer 纹理坐标（已按 zoom 裁剪区归一化），直接传给 shader。
  */
 class BeautyRenderer(
-    viewSurfaceTexture: SurfaceTexture,
+    private val viewSurfaceTexture: SurfaceTexture,
     private val sensorWidth: Int,
     private val sensorHeight: Int
 ) {
@@ -228,6 +228,39 @@ class BeautyRenderer(
         faceRect = rect
     }
 
+    /** 期望的渲染缓冲尺寸（= view 实际尺寸），drawFrame 每帧校验，错位即自愈重建 */
+    private var expectedW = 0
+    private var expectedH = 0
+
+    fun setExpectedSize(w: Int, h: Int) {
+        expectedW = w
+        expectedH = h
+    }
+
+    /** 必须在 GL 线程调用：缓冲尺寸被污染/过期时重置尺寸并重建 EGL window surface */
+    private fun resetBufferAndSurfaceGL() {
+        if (expectedW <= 0 || expectedH <= 0) return
+        try {
+            viewSurfaceTexture.setDefaultBufferSize(expectedW, expectedH)
+            val config = eglConfig ?: return
+            EGL14.eglMakeCurrent(
+                eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT
+            )
+            if (eglSurface != EGL14.EGL_NO_SURFACE) {
+                EGL14.eglDestroySurface(eglDisplay, eglSurface)
+            }
+            eglSurface = EGL14.eglCreateWindowSurface(
+                eglDisplay, config, viewSurface, intArrayOf(EGL14.EGL_NONE), 0
+            )
+            if (eglSurface != EGL14.EGL_NO_SURFACE) {
+                EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
+                Log.d(TAG, "buffer reset to ${expectedW}x${expectedH}, surface recreated")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "resetBufferAndSurfaceGL failed", e)
+        }
+    }
+
     /**
      * view / 预览缓冲尺寸变化后重建 EGL window surface。
      * 缓冲尺寸由 SurfaceTexture.setDefaultBufferSize 决定且会粘住（曾被降级路径设成横屏），
@@ -394,6 +427,15 @@ class BeautyRenderer(
             EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_WIDTH, w, 0)
             EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_HEIGHT, h, 0)
             if (w[0] <= 0 || h[0] <= 0) return
+            // 缓冲尺寸自愈：与期望尺寸（view 实际尺寸）不符说明被污染或过期
+            // （如降级路径曾设成横屏 1920x1080），立即重置重建，避免画面被压成一条
+            if (expectedW > 0 && expectedH > 0 && (w[0] != expectedW || h[0] != expectedH)) {
+                Log.w(TAG, "buffer ${w[0]}x${h[0]} != expected ${expectedW}x${expectedH}, healing")
+                resetBufferAndSurfaceGL()
+                EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_WIDTH, w, 0)
+                EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_HEIGHT, h, 0)
+                if (w[0] <= 0 || h[0] <= 0) return
+            }
             surfaceWidth = w[0]
             surfaceHeight = h[0]
 
@@ -415,14 +457,14 @@ class BeautyRenderer(
             GLES20.glUniform4f(faceHandle, face[0], face[1], face[2], face[3])
             GLES20.glUniform1f(smoothHandle, smooth)
 
-            // 内容是竖屏（宽/高 = sensorHeight/sensorWidth）；缓冲宽高比不同时居中缩放，
-            // 缓冲由系统按 view 尺寸分配，SurfaceFlinger 再 1:1 贴到 view，全程不变形
+            // 居中裁切铺满（center-crop）：画面放大到完全覆盖缓冲，多余部分裁掉，
+            // 预览铺满全屏无黑边；只裁剪、不拉伸，人脸比例不变。录制走独立管线不受影响。
             val contentAspect = sensorHeight.toFloat() / sensorWidth.toFloat()
             val bufferAspect = surfaceWidth.toFloat() / surfaceHeight.toFloat()
             if (bufferAspect > contentAspect) {
-                GLES20.glUniform2f(scaleHandle, contentAspect / bufferAspect, 1f)
-            } else {
                 GLES20.glUniform2f(scaleHandle, 1f, bufferAspect / contentAspect)
+            } else {
+                GLES20.glUniform2f(scaleHandle, contentAspect / bufferAspect, 1f)
             }
 
             quadBuffer.position(0)

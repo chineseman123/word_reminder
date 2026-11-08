@@ -314,6 +314,7 @@ class CameraHelper(
             val bh = if (textureView.height > 0) textureView.height else portraitHeight
             viewSurfaceTexture.setDefaultBufferSize(bw, bh)
             val renderer = BeautyRenderer(viewSurfaceTexture, sensorWidth, sensorHeight)
+            renderer.setExpectedSize(bw, bh)
             renderer.setSmoothing(beautySmooth)
             smoothedFace?.let { renderer.setFaceRect(it) }
             beautyRenderer = renderer
@@ -406,6 +407,7 @@ class CameraHelper(
         val renderer = beautyRenderer
         if (st != null && renderer != null && w > 0 && h > 0) {
             st.setDefaultBufferSize(w, h)
+            renderer.setExpectedSize(w, h)
             renderer.recreateWindowSurface()
         }
         updatePreview()
