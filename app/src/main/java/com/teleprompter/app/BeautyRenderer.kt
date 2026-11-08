@@ -36,12 +36,15 @@ class BeautyRenderer(
     companion object {
         private const val TAG = "BeautyRenderer"
 
+        // uScale：按渲染缓冲宽高比对画面做居中缩放（letterbox），
+        // 保证任何缓冲尺寸下画面不变形、不占半屏；录制缓冲与内容同宽高比时传 (1,1)
         const val VERTEX_SHADER = """
             attribute vec2 aPosition;
             attribute vec2 aTexCoord;
+            uniform vec2 uScale;
             varying vec2 vTexCoord;
             void main() {
-                gl_Position = vec4(aPosition, 0.0, 1.0);
+                gl_Position = vec4(aPosition * uScale, 0.0, 1.0);
                 vTexCoord = aTexCoord;
             }
         """
@@ -133,6 +136,7 @@ class BeautyRenderer(
     private var stMatrixHandle = 0
     private var faceHandle = 0
     private var smoothHandle = 0
+    private var scaleHandle = 0
 
     private lateinit var surfaceTexture: SurfaceTexture
     private lateinit var cameraSurface: Surface
@@ -152,9 +156,9 @@ class BeautyRenderer(
         .asFloatBuffer()
         .apply { put(TEX_COORDS); position(0) }
 
-    // 预览保持镜像（自拍视角）。实测 v 轴管左右、u 轴管上下，
-    // 所以镜像是翻 v 轴（翻 u 轴会上下颠倒），与录制管线 flip=(0,0) 相对称
-    private val flipVector = floatArrayOf(0f, 1f)
+    // 与录制管线完全一致的变换（flip=(0,0)）：该方向在用户设备上已验证正确，
+    // 预览所见即录制所得（非镜像）。此前翻 u 轴导致上下颠倒、翻 v 轴导致左右颠倒
+    private val flipVector = floatArrayOf(0f, 0f)
 
     @Volatile
     private var smooth = 0f
@@ -300,6 +304,7 @@ class BeautyRenderer(
         stMatrixHandle = GLES20.glGetUniformLocation(program, "uSTMatrix")
         faceHandle = GLES20.glGetUniformLocation(program, "uFace")
         smoothHandle = GLES20.glGetUniformLocation(program, "uSmooth")
+        scaleHandle = GLES20.glGetUniformLocation(program, "uScale")
 
         val texture = SurfaceTexture(textureId).apply {
             setDefaultBufferSize(sensorWidth, sensorHeight)
@@ -324,6 +329,16 @@ class BeautyRenderer(
 
     private fun drawFrame() {
         try {
+            // 每帧查询当前缓冲实际尺寸：系统会在 view 尺寸变化时自动重建缓冲，
+            // 只查一次会遇到首次正确、后续打开尺寸对不上（半屏黑）的问题
+            val w = IntArray(1)
+            val h = IntArray(1)
+            EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_WIDTH, w, 0)
+            EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_HEIGHT, h, 0)
+            if (w[0] <= 0 || h[0] <= 0) return
+            surfaceWidth = w[0]
+            surfaceHeight = h[0]
+
             surfaceTexture.getTransformMatrix(stMatrix)
 
             GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
@@ -341,6 +356,16 @@ class BeautyRenderer(
             val face = faceRect
             GLES20.glUniform4f(faceHandle, face[0], face[1], face[2], face[3])
             GLES20.glUniform1f(smoothHandle, smooth)
+
+            // 内容是竖屏（宽/高 = sensorHeight/sensorWidth）；缓冲宽高比不同时居中缩放，
+            // 缓冲由系统按 view 尺寸分配，SurfaceFlinger 再 1:1 贴到 view，全程不变形
+            val contentAspect = sensorHeight.toFloat() / sensorWidth.toFloat()
+            val bufferAspect = surfaceWidth.toFloat() / surfaceHeight.toFloat()
+            if (bufferAspect > contentAspect) {
+                GLES20.glUniform2f(scaleHandle, contentAspect / bufferAspect, 1f)
+            } else {
+                GLES20.glUniform2f(scaleHandle, 1f, bufferAspect / contentAspect)
+            }
 
             quadBuffer.position(0)
             GLES20.glEnableVertexAttribArray(positionHandle)

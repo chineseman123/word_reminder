@@ -106,6 +106,7 @@ class MirrorVideoRecorder(
     private var stMatrixHandle = 0
     private var faceHandle = 0
     private var smoothHandle = 0
+    private var scaleHandle = 0
 
     private lateinit var surfaceTexture: android.graphics.SurfaceTexture
     private lateinit var cameraSurface: Surface
@@ -370,6 +371,7 @@ class MirrorVideoRecorder(
             stMatrixHandle = GLES20.glGetUniformLocation(program, "uSTMatrix")
             faceHandle = GLES20.glGetUniformLocation(program, "uFace")
             smoothHandle = GLES20.glGetUniformLocation(program, "uSmooth")
+            scaleHandle = GLES20.glGetUniformLocation(program, "uScale")
 
             val texture = android.graphics.SurfaceTexture(textureId).apply {
                 setDefaultBufferSize(sensorWidth, sensorHeight)
@@ -421,6 +423,8 @@ class MirrorVideoRecorder(
             val face = faceRect
             GLES20.glUniform4f(faceHandle, face[0], face[1], face[2], face[3])
             GLES20.glUniform1f(smoothHandle, smooth)
+            // 录制缓冲与内容同为竖屏同宽高比，无需缩放
+            GLES20.glUniform2f(scaleHandle, 1f, 1f)
 
             quadBuffer.position(0)
             GLES20.glEnableVertexAttribArray(positionHandle)

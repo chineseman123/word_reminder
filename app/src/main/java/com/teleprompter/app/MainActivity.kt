@@ -631,13 +631,17 @@ class MainActivity : AppCompatActivity() {
         teleprompterScroll.setBackgroundColor(Color.argb(a, 128, 128, 128))
     }
 
-    /** 把手柄贴到字幕块右下角（字幕块位置/尺寸变化后调用） */
+    /** 把手柄贴到字幕块右下角（字幕块位置/尺寸变化后调用），并与屏幕边缘保持安全距离避免误触侧滑返回 */
     private fun updatePanelHandle() {
         if (!::btnPanelHandle.isInitialized) return
         btnPanelHandle.post {
+            val parent = teleprompterScroll.parent as? View ?: return@post
             val half = btnPanelHandle.width / 2f
-            btnPanelHandle.x = teleprompterScroll.x + teleprompterScroll.width - half
-            btnPanelHandle.y = teleprompterScroll.y + teleprompterScroll.height - half
+            val margin = 20 * resources.displayMetrics.density
+            btnPanelHandle.x = (teleprompterScroll.x + teleprompterScroll.width - half)
+                .coerceIn(margin, parent.width - btnPanelHandle.width - margin)
+            btnPanelHandle.y = (teleprompterScroll.y + teleprompterScroll.height - half)
+                .coerceIn(margin, parent.height - btnPanelHandle.height - margin)
         }
     }
 

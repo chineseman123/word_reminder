@@ -278,8 +278,8 @@ class CameraHelper(
         beautyRenderer?.let { return it.inputSurface }
         if (beautyRendererFailed) return null
         return try {
-            // 渲染目标是 TextureView：缓冲区设成竖屏尺寸，避免画面二次拉伸
-            viewSurfaceTexture.setDefaultBufferSize(portraitWidth, portraitHeight)
+            // 渲染目标是 TextureView：缓冲尺寸交给系统按 view 尺寸管理，
+            // 画面宽高比由 BeautyRenderer 内部按缓冲实际尺寸居中适配（防半屏黑/变形）
             val renderer = BeautyRenderer(viewSurfaceTexture, sensorWidth, sensorHeight)
             renderer.setSmoothing(beautySmooth)
             smoothedFace?.let { renderer.setFaceRect(it) }
