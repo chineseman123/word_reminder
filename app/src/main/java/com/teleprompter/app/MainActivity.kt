@@ -58,6 +58,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var txtWhiten: TextView
     private lateinit var seekSmooth: SeekBar
     private lateinit var txtSmooth: TextView
+    private lateinit var btnPanelHandle: ImageView
 
     // Camera & Recording
     private var cameraHelper: CameraHelper? = null
@@ -125,6 +126,7 @@ class MainActivity : AppCompatActivity() {
         txtWhiten = findViewById(R.id.txtWhiten)
         seekSmooth = findViewById(R.id.seekSmooth)
         txtSmooth = findViewById(R.id.txtSmooth)
+        btnPanelHandle = findViewById(R.id.btnPanelHandle)
 
         // 恢复上次保存的文案，避免每次打开都被新手介绍覆盖
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
@@ -146,6 +148,14 @@ class MainActivity : AppCompatActivity() {
         txtWhiten.text = "$beautyWhiten%"
         seekSmooth.progress = beautySmooth
         txtSmooth.text = "$beautySmooth%"
+
+        // 字幕拖拽手柄初始定位（等布局完成后）
+        teleprompterScroll.post {
+            if (controlsVisible) {
+                btnPanelHandle.visibility = View.VISIBLE
+                updatePanelHandle()
+            }
+        }
         teleprompterScroll.post {
             val pw = prefs.getInt(KEY_PANEL_W, 0)
             val ph = prefs.getInt(KEY_PANEL_H, 0)
@@ -157,6 +167,7 @@ class MainActivity : AppCompatActivity() {
             }
             teleprompterScroll.translationX = prefs.getFloat(KEY_PANEL_X, 0f)
             teleprompterScroll.translationY = prefs.getFloat(KEY_PANEL_Y, 0f)
+            updatePanelHandle()
         }
 
         // 初始化数值显示
@@ -216,6 +227,20 @@ class MainActivity : AppCompatActivity() {
         cameraHelper = CameraHelper(this, cameraPreview)
         // CameraHelper 重建后恢复美颜参数（内部会同步给预览/录制两条 GL 管线）
         cameraHelper?.setBeauty(beautyWhiten / 100f, beautySmooth / 100f)
+        // 录像启动失败（如会话配置失败）时恢复界面状态
+        cameraHelper?.onRecordingStopped = { path ->
+            if (path == null && isRecording) {
+                isRecording = false
+                btnRecord.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_record))
+                btnRecord.contentDescription = "开始录制"
+                stopTimer()
+                pauseScroll()
+                applyTopBarVisibility()
+                bottomBar.visibility = View.VISIBLE
+                btnPanelHandle.visibility = View.VISIBLE
+                controlsVisible = true
+            }
+        }
 
         // Default zoom 1.0x, applied when preview starts
         currentZoom = 1.0f
@@ -408,6 +433,44 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
+        // 字幕右下角手柄：横向拖动=拉伸字幕宽度，竖向拖动=上下移动字幕
+        var handleLastX = 0f
+        var handleLastY = 0f
+        btnPanelHandle.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    handleLastX = event.rawX
+                    handleLastY = event.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - handleLastX
+                    val dy = event.rawY - handleLastY
+                    handleLastX = event.rawX
+                    handleLastY = event.rawY
+                    val parent = teleprompterScroll.parent as View
+                    // 横向：拉伸宽度（左边缘锚定）
+                    val lp = teleprompterScroll.layoutParams
+                    lp.width = (teleprompterScroll.width + dx.toInt())
+                        .coerceIn(parent.width / 3, parent.width)
+                    teleprompterScroll.layoutParams = lp
+                    // 竖向：上下移动字幕块
+                    teleprompterScroll.translationY = (teleprompterScroll.translationY + dy)
+                        .coerceIn(
+                            -teleprompterScroll.top.toFloat(),
+                            (parent.height - teleprompterScroll.top - teleprompterScroll.height).toFloat()
+                        )
+                    updatePanelHandle()
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    savePanelGeometry()
+                    true
+                }
+                else -> false
+            }
+        }
+
         // Play/Pause scroll
         btnPlayPause.setOnClickListener {
             if (isScrolling) {
@@ -458,11 +521,14 @@ class MainActivity : AppCompatActivity() {
         topBar.visibility = View.GONE
         bottomBar.visibility = View.GONE
         btnExpandTop.visibility = View.GONE
+        btnPanelHandle.visibility = View.GONE
     }
 
     private fun hideEditPanel() {
         editPanel.visibility = View.GONE
         bottomBar.visibility = View.VISIBLE
+        btnPanelHandle.visibility = View.VISIBLE
+        updatePanelHandle()
         applyTopBarVisibility()
         controlsVisible = true
     }
@@ -586,6 +652,16 @@ class MainActivity : AppCompatActivity() {
         teleprompterScroll.setBackgroundColor(Color.argb(a, 128, 128, 128))
     }
 
+    /** 把手柄贴到字幕块右下角（字幕块位置/尺寸变化后调用） */
+    private fun updatePanelHandle() {
+        if (!::btnPanelHandle.isInitialized) return
+        btnPanelHandle.post {
+            val half = btnPanelHandle.width / 2f
+            btnPanelHandle.x = teleprompterScroll.x + teleprompterScroll.width - half
+            btnPanelHandle.y = teleprompterScroll.y + teleprompterScroll.height - half
+        }
+    }
+
     private fun savePanelGeometry() {
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
             .putFloat(KEY_PANEL_X, teleprompterScroll.translationX)
@@ -650,6 +726,7 @@ class MainActivity : AppCompatActivity() {
                             lp.height = (pinchStartH * scale).toInt()
                                 .coerceIn((120 * resources.displayMetrics.density).toInt(), parent.height * 7 / 10)
                             v.layoutParams = lp
+                            updatePanelHandle()
                         }
                         true
                     }
@@ -666,6 +743,7 @@ class MainActivity : AppCompatActivity() {
                                 .coerceIn(-v.left.toFloat(), (parent.width - v.left - v.width).toFloat())
                             v.translationY = (v.translationY + event.rawY - lastY)
                                 .coerceIn(-v.top.toFloat(), (parent.height - v.top - v.height).toFloat())
+                            updatePanelHandle()
                         }
                         lastX = event.rawX
                         lastY = event.rawY
@@ -725,6 +803,7 @@ class MainActivity : AppCompatActivity() {
                     topBar.visibility = View.GONE
                     bottomBar.visibility = View.GONE
                     btnExpandTop.visibility = View.GONE
+                    btnPanelHandle.visibility = View.GONE
                 }
             }, 3000)
         } else {
@@ -741,6 +820,8 @@ class MainActivity : AppCompatActivity() {
         pauseScroll()
         applyTopBarVisibility()
         bottomBar.visibility = View.VISIBLE
+        btnPanelHandle.visibility = View.VISIBLE
+        updatePanelHandle()
         controlsVisible = true
     }
 
@@ -808,10 +889,13 @@ class MainActivity : AppCompatActivity() {
         if (controlsVisible) {
             applyTopBarVisibility()
             bottomBar.visibility = View.VISIBLE
+            btnPanelHandle.visibility = View.VISIBLE
+            updatePanelHandle()
         } else {
             topBar.visibility = View.GONE
             bottomBar.visibility = View.GONE
             btnExpandTop.visibility = View.GONE
+            btnPanelHandle.visibility = View.GONE
         }
     }
 

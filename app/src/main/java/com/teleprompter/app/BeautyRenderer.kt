@@ -52,11 +52,11 @@ class BeautyRenderer(
         const val FRAGMENT_SHADER = """
             #extension GL_OES_EGL_image_external : require
             precision mediump float;
-            varying highp vec2 vTexCoord;
+            varying vec2 vTexCoord;
             uniform samplerExternalOES sTexture;
-            uniform highp mat4 uSTMatrix;
-            uniform highp vec2 uFlip;
-            uniform highp vec4 uFace;
+            uniform mat4 uSTMatrix;
+            uniform vec2 uFlip;
+            uniform vec4 uFace;
             uniform float uWhiten;
             uniform float uSmooth;
 

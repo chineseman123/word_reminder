@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 米字型（四向箭头 + 中心点）拖拽手柄图标 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <!-- 上箭头 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,1.5 L8.8,5.5 L15.2,5.5 Z" />
+    <!-- 下箭头 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,22.5 L8.8,18.5 L15.2,18.5 Z" />
+    <!-- 左箭头 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M1.5,12 L5.5,8.8 L5.5,15.2 Z" />
+    <!-- 右箭头 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M22.5,12 L18.5,8.8 L18.5,15.2 Z" />
+    <!-- 中心圆点 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,12 m-2.8,0 a2.8,2.8 0 1,1 5.6,0 a2.8,2.8 0 1,1 -5.6,0" />
+</vector>

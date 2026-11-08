@@ -61,8 +61,17 @@ class CameraHelper(
     private var faceDetectMode = CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_OFF
     var faceDetectSupported = false
         private set
+    // 部分机型开着人脸检测无法配置相机会话：配置失败一次后置此标志并永久关闭（本次运行）
+    private var faceDetectDisabledByFailure = false
+    // 美颜渲染器初始化失败后不再反复重试（避免每次开相机/录像都卡 5 秒）
+    private var beautyRendererFailed = false
     private var smoothedFace: FloatArray? = null
     private var faceMissCount = 0
+
+    /** 当前是否应在请求里开启人脸检测 */
+    private fun faceDetectEnabled() =
+        faceDetectMode != CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_OFF &&
+            !faceDetectDisabledByFailure
 
     // Callback for recording state
     var onRecordingStopped: ((String?) -> Unit)? = null
@@ -121,15 +130,15 @@ class CameraHelper(
             maxZoomRatio = maxDigitalZoom.coerceAtMost(5.0f)  // cap at 5x for safety
             Log.d(TAG, "Active array: ${activeArrayRect}, max digital zoom: ${maxDigitalZoom}")
 
-            // 人脸检测能力：优先 FULL，其次 SIMPLE（只需要人脸框，SIMPLE 足够）
+            // 人脸检测能力：优先 SIMPLE（兼容性最好，只需要人脸框），其次 FULL
             val faceModes = characteristics.get(
                 CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES
             ) ?: intArrayOf()
             faceDetectMode = when {
-                faceModes.contains(CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_FULL) ->
-                    CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_FULL
                 faceModes.contains(CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_SIMPLE) ->
                     CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_SIMPLE
+                faceModes.contains(CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_FULL) ->
+                    CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_FULL
                 else -> CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_OFF
             }
             faceDetectSupported = faceDetectMode != CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_OFF
@@ -225,7 +234,7 @@ class CameraHelper(
                 if (zoomRatio > 1.0f) {
                     set(CaptureRequest.SCALER_CROP_REGION, getCropRegion())
                 }
-                if (faceDetectMode != CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_OFF) {
+                if (faceDetectEnabled()) {
                     set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, faceDetectMode)
                 }
             }
@@ -247,6 +256,15 @@ class CameraHelper(
 
                     override fun onConfigureFailed(session: CameraCaptureSession) {
                         Log.e(TAG, "Preview session configuration FAILED")
+                        // 部分机型开着人脸检测无法配置会话：关掉后重试一次
+                        if (!faceDetectDisabledByFailure &&
+                            faceDetectMode != CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_OFF
+                        ) {
+                            faceDetectDisabledByFailure = true
+                            faceDetectSupported = false
+                            Log.w(TAG, "Retrying preview session WITHOUT face detection")
+                            startPreview()
+                        }
                     }
                 },
                 backgroundHandler
@@ -259,6 +277,7 @@ class CameraHelper(
     /** 创建（或复用）美颜预览渲染器；返回相机预览目标 Surface，失败返回 null 走降级 */
     private fun tryGetBeautySurface(viewSurfaceTexture: android.graphics.SurfaceTexture): Surface? {
         beautyRenderer?.let { return it.inputSurface }
+        if (beautyRendererFailed) return null
         return try {
             // 渲染目标是 TextureView：缓冲区设成竖屏尺寸，避免画面二次拉伸
             viewSurfaceTexture.setDefaultBufferSize(portraitWidth, portraitHeight)
@@ -270,6 +289,7 @@ class CameraHelper(
             renderer.inputSurface
         } catch (e: Exception) {
             Log.e(TAG, "BeautyRenderer init failed, fallback to direct preview", e)
+            beautyRendererFailed = true
             null
         }
     }
@@ -456,13 +476,14 @@ class CameraHelper(
                 if (zoomRatio > 1.0f) {
                     set(CaptureRequest.SCALER_CROP_REGION, getCropRegion())
                 }
-                if (faceDetectMode != CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_OFF) {
+                if (faceDetectEnabled()) {
                     set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, faceDetectMode)
                 }
             }
 
+            val recordSurfaces = listOf(previewSurface, recordTarget)
             cameraDevice?.createCaptureSession(
-                listOf(previewSurface, recordTarget),
+                recordSurfaces,
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         captureSession = session
@@ -495,8 +516,33 @@ class CameraHelper(
 
                     override fun onConfigureFailed(session: CameraCaptureSession) {
                         Log.e(TAG, "Recording session configuration FAILED")
+                        // 部分机型开着人脸检测无法配置录像会话：关掉人脸检测重试一次
+                        if (!faceDetectDisabledByFailure &&
+                            faceDetectMode != CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_OFF
+                        ) {
+                            faceDetectDisabledByFailure = true
+                            faceDetectSupported = false
+                            Log.w(TAG, "Retrying record session WITHOUT face detection")
+                            captureRequestBuilder.set(
+                                CaptureRequest.STATISTICS_FACE_DETECT_MODE,
+                                CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_OFF
+                            )
+                            try {
+                                cameraDevice?.createCaptureSession(recordSurfaces, this, backgroundHandler)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Retry record session failed", e)
+                            }
+                            return
+                        }
+                        // 彻底失败：释放录像器并通知界面恢复状态
+                        isRecording = false
+                        runCatching { videoRecorder?.stop() }
+                        videoRecorder = null
+                        runCatching { mediaRecorder?.release() }
+                        mediaRecorder = null
                         Handler(context.mainLooper).post {
-                            android.widget.Toast.makeText(context, "录制会话配置失败", android.widget.Toast.LENGTH_LONG).show()
+                            android.widget.Toast.makeText(context, "录制会话配置失败，请重试", android.widget.Toast.LENGTH_LONG).show()
+                            onRecordingStopped?.invoke(null)
                         }
                     }
                 },
