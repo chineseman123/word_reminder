@@ -51,7 +51,8 @@ class BeautyRenderer(
 
         // uSTMatrix 负责旋转竖屏/方向修正；uFlip 按需做水平翻转（预览镜像用）。
         // uFace: (cx, cy, rx, ry) 人脸椭圆，buffer 纹理坐标系；rx<=0 表示未检测到人脸。
-        // 磨皮只做颜色相近加权的小核模糊（保边缘），且严格限制在人脸椭圆内 —— 背景绝不被虚化。
+        // 磨皮 = 保边缘加权模糊 + 暗点淡化（黑头是细小暗点，会被近邻均值提亮）；
+        // 全部严格限制在人脸椭圆内 —— 背景绝不被虚化。
         const val FRAGMENT_SHADER = """
             #extension GL_OES_EGL_image_external : require
             precision mediump float;
@@ -62,13 +63,22 @@ class BeautyRenderer(
             uniform vec4 uFace;
             uniform float uSmooth;
 
-            // 8 邻域采样，颜色与中心差异越小权重越大（类双边滤波，保住五官/背景边缘）
+            // 12 邻域（内圈4+外圈8）采样，颜色与中心差异越小权重越大（类双边滤波，保住五官/背景边缘）
             vec3 smoothSample(vec2 uv, float radius) {
                 vec3 base = texture2D(sTexture, uv).rgb;
                 vec3 sum = base;
                 float wsum = 1.0;
                 vec3 c;
                 float w;
+                float r2 = radius * 0.5;
+                c = texture2D(sTexture, uv + vec2(r2, 0.0)).rgb;
+                w = max(0.0, 1.0 - dot(abs(c - base), vec3(5.0))); sum += c * w; wsum += w;
+                c = texture2D(sTexture, uv - vec2(r2, 0.0)).rgb;
+                w = max(0.0, 1.0 - dot(abs(c - base), vec3(5.0))); sum += c * w; wsum += w;
+                c = texture2D(sTexture, uv + vec2(0.0, r2)).rgb;
+                w = max(0.0, 1.0 - dot(abs(c - base), vec3(5.0))); sum += c * w; wsum += w;
+                c = texture2D(sTexture, uv - vec2(0.0, r2)).rgb;
+                w = max(0.0, 1.0 - dot(abs(c - base), vec3(5.0))); sum += c * w; wsum += w;
                 c = texture2D(sTexture, uv + vec2(radius, 0.0)).rgb;
                 w = max(0.0, 1.0 - dot(abs(c - base), vec3(5.0))); sum += c * w; wsum += w;
                 c = texture2D(sTexture, uv - vec2(radius, 0.0)).rgb;
@@ -103,8 +113,22 @@ class BeautyRenderer(
 
                 // 磨皮（淡化痘痘/黑头）：只在人脸区域内生效，背景绝不动
                 if (uSmooth > 0.001 && hasFace && mask > 0.001) {
-                    vec3 blurred = smoothSample(uv, 0.003 + 0.007 * uSmooth);
-                    color.rgb = mix(color.rgb, blurred, clamp(uSmooth * mask, 0.0, 1.0));
+                    vec3 base = color.rgb;
+
+                    // 暗点淡化（去黑头加强）：当前像素明显暗于近邻均值 → 判定为细小暗点，
+                    // 向近邻均值提亮；鼻孔等大暗区的近邻同样暗，不会被误提。
+                    float nr = 0.002;
+                    vec3 nearAvg = (texture2D(sTexture, uv + vec2(nr, 0.0)).rgb
+                                  + texture2D(sTexture, uv - vec2(nr, 0.0)).rgb
+                                  + texture2D(sTexture, uv + vec2(0.0, nr)).rgb
+                                  + texture2D(sTexture, uv - vec2(0.0, nr)).rgb) * 0.25;
+                    float dl = dot(nearAvg - base, vec3(0.299, 0.587, 0.114));
+                    vec3 spotFixed = mix(base, nearAvg, clamp((dl - 0.02) * 6.0, 0.0, 1.0) * uSmooth);
+
+                    // 更大半径的保边缘磨皮，强度越高半径越大
+                    vec3 blurred = smoothSample(uv, 0.004 + 0.008 * uSmooth);
+                    vec3 res = mix(spotFixed, blurred, clamp(uSmooth * 0.9, 0.0, 1.0));
+                    color.rgb = mix(base, res, clamp(uSmooth * mask, 0.0, 1.0));
                 }
 
                 gl_FragColor = color;
@@ -124,6 +148,7 @@ class BeautyRenderer(
     private var eglDisplay = EGL14.EGL_NO_DISPLAY
     private var eglContext = EGL14.EGL_NO_CONTEXT
     private var eglSurface = EGL14.EGL_NO_SURFACE
+    private var eglConfig: EGLConfig? = null
     private var surfaceWidth = 0
     private var surfaceHeight = 0
 
@@ -203,6 +228,38 @@ class BeautyRenderer(
         faceRect = rect
     }
 
+    /**
+     * view / 预览缓冲尺寸变化后重建 EGL window surface。
+     * 缓冲尺寸由 SurfaceTexture.setDefaultBufferSize 决定且会粘住（曾被降级路径设成横屏），
+     * 不重建的话 eglQuerySurface 一直拿到旧尺寸，letterbox 按错误宽高比把画面压到中间（两边黑）。
+     */
+    fun recreateWindowSurface() {
+        if (released) return
+        glHandler.post {
+            try {
+                val config = eglConfig ?: return@post
+                if (eglDisplay == EGL14.EGL_NO_DISPLAY) return@post
+                EGL14.eglMakeCurrent(
+                    eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT
+                )
+                if (eglSurface != EGL14.EGL_NO_SURFACE) {
+                    EGL14.eglDestroySurface(eglDisplay, eglSurface)
+                }
+                eglSurface = EGL14.eglCreateWindowSurface(
+                    eglDisplay, config, viewSurface, intArrayOf(EGL14.EGL_NONE), 0
+                )
+                if (eglSurface != EGL14.EGL_NO_SURFACE) {
+                    EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
+                    Log.d(TAG, "EGL window surface recreated")
+                } else {
+                    Log.e(TAG, "recreate eglCreateWindowSurface failed: ${EGL14.eglGetError()}")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "recreateWindowSurface failed", e)
+            }
+        }
+    }
+
     fun release() {
         if (released) return
         released = true
@@ -265,6 +322,7 @@ class BeautyRenderer(
         if (!EGL14.eglChooseConfig(eglDisplay, configAttrs, 0, configs, 0, 1, numConfigs, 0)) {
             throw IllegalStateException("eglChooseConfig failed")
         }
+        eglConfig = configs[0]
 
         eglContext = EGL14.eglCreateContext(
             eglDisplay, configs[0], EGL14.EGL_NO_CONTEXT,

@@ -272,7 +272,7 @@ class MainActivity : AppCompatActivity() {
                     }, 500)
                 }
                 override fun onSurfaceTextureSizeChanged(surface: android.graphics.SurfaceTexture, width: Int, height: Int) {
-                    cameraHelper?.updatePreview()
+                    cameraHelper?.onViewSizeChanged(width, height)
                     adjustPreviewAspectRatio()
                 }
                 override fun onSurfaceTextureDestroyed(surface: android.graphics.SurfaceTexture): Boolean {
@@ -496,6 +496,11 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnHistoryEdit).setOnClickListener {
             showScriptHistory()
         }
+        // 一键清空编辑框：清掉上次台词，方便直接粘贴新台词
+        findViewById<Button>(R.id.btnClearEdit).setOnClickListener {
+            editText.setText("")
+            Toast.makeText(this, "已清空，可粘贴新台词", Toast.LENGTH_SHORT).show()
+        }
 
         // Tap to show/hide controls during recording
         cameraPreview.setOnClickListener {
@@ -527,13 +532,17 @@ class MainActivity : AppCompatActivity() {
         controlsVisible = true
     }
 
-    // ---- 台词本：书签式历史台词（带保存时间，可点选回填）----
+    // ---- 台词本：书签式历史台词（带保存时间，可点选回填，左滑单条删除）----
     private fun saveScriptToHistory(content: String) {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return
         val list = loadScriptHistory().toMutableList()
         list.removeAll { it.second == trimmed }                 // 同内容去重，刷新到最新
         list.add(0, System.currentTimeMillis() to trimmed)      // 最新在前
+        persistHistory(list)
+    }
+
+    private fun persistHistory(list: List<Pair<Long, String>>) {
         val arr = JSONArray()
         list.take(20).forEach { (time, text) ->                 // 最多保留 20 条
             arr.put(org.json.JSONObject().apply {
@@ -563,45 +572,145 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showScriptHistory() {
-        val history = loadScriptHistory()
+        val history = loadScriptHistory().toMutableList()
         if (history.isEmpty()) {
             Toast.makeText(this, "暂无历史台词", Toast.LENGTH_SHORT).show()
             return
         }
+        val density = resources.displayMetrics.density
+        val deleteW = 64 * density                       // 删除按钮露出的宽度
+        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
         val fmt = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
-        val rows = history.map { (time, text) ->
-            mapOf(
-                "time" to if (time > 0) fmt.format(Date(time)) else "早期记录",
-                "text" to text.replace("\n", " ").take(40)
-            )
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val scroll = ScrollView(this).apply {
+            addView(container)
+            setBackgroundColor(0xFF1F1F30.toInt())
         }
-        val adapter = SimpleAdapter(
-            this, rows,
-            android.R.layout.simple_list_item_2,
-            arrayOf("time", "text"),
-            intArrayOf(android.R.id.text1, android.R.id.text2)
-        )
-        android.app.AlertDialog.Builder(this)
-            .setTitle("历史台词（点选回填）")
-            .setAdapter(adapter) { _, which ->
-                editText.setText(history[which].second)
-            }
-            .setNeutralButton("一键清空") { _, _ -> confirmClearHistory() }
-            .setNegativeButton("取消", null)
+        val dialog = android.app.AlertDialog.Builder(this)
+            .setTitle("历史台词（点选回填 · 左滑删除）")
+            .setView(scroll)
+            .setNegativeButton("关闭", null)
             .show()
-    }
 
-    private fun confirmClearHistory() {
-        android.app.AlertDialog.Builder(this)
-            .setTitle("清空历史台词")
-            .setMessage("确定要删除全部历史台词吗？此操作不可恢复。")
-            .setPositiveButton("清空") { _, _ ->
-                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                    .remove("script_history").apply()
-                Toast.makeText(this, "历史台词已清空", Toast.LENGTH_SHORT).show()
+        var openedRow: View? = null                     // 当前滑开露出删除按钮的行
+
+        fun closeOpened(except: View? = null) {
+            if (openedRow != null && openedRow != except) {
+                openedRow?.animate()?.translationX(0f)?.setDuration(150)?.start()
             }
-            .setNegativeButton("取消", null)
-            .show()
+            openedRow = except
+        }
+
+        history.forEach { item ->
+            // 行结构：FrameLayout 底层是右侧红色“删除”，上层内容可左滑露出它
+            val rowRoot = FrameLayout(this)
+            val deleteBtn = TextView(this).apply {
+                text = "删除"
+                setTextColor(Color.WHITE)
+                textSize = 14f
+                gravity = android.view.Gravity.CENTER
+                setBackgroundColor(0xFFD32F2F.toInt())
+                layoutParams = FrameLayout.LayoutParams(
+                    deleteW.toInt(), FrameLayout.LayoutParams.MATCH_PARENT, android.view.Gravity.END
+                )
+            }
+            val content = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(0xFF1F1F30.toInt())
+                setPadding((14 * density).toInt(), (10 * density).toInt(), (14 * density).toInt(), (10 * density).toInt())
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT
+                )
+            }
+            content.addView(TextView(this).apply {
+                text = if (item.first > 0) fmt.format(Date(item.first)) else "早期记录"
+                textSize = 11f
+                setTextColor(0xFF9E9E9E.toInt())
+            })
+            content.addView(TextView(this).apply {
+                text = item.second.replace("\n", " ").take(40)
+                textSize = 14f
+                setTextColor(Color.WHITE)
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            })
+
+            var downX = 0f
+            var downY = 0f
+            var startTx = 0f
+            var dragging = false
+            content.setOnTouchListener { v, ev ->
+                when (ev.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downX = ev.rawX; downY = ev.rawY; startTx = v.translationX; dragging = false
+                        true  // 必须消费 DOWN，否则收不到后续 MOVE/UP
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = ev.rawX - downX
+                        val dy = ev.rawY - downY
+                        if (!dragging && abs(dx) > touchSlop && abs(dx) > abs(dy)) {
+                            dragging = true
+                            v.parent.requestDisallowInterceptTouchEvent(true)
+                        }
+                        if (dragging) {
+                            v.translationX = (startTx + dx).coerceIn(-deleteW, 0f)
+                            true
+                        } else false
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        if (dragging) {
+                            // 松手吸附：滑过一半就停住露出删除键，否则弹回
+                            val target = if (v.translationX < -deleteW / 2) -deleteW else 0f
+                            v.animate().translationX(target).setDuration(150).start()
+                            closeOpened(if (target < 0f) v else null)
+                            true
+                        } else {
+                            if (v.translationX < -1f) {
+                                // 行已滑开时点击 = 收起
+                                v.animate().translationX(0f).setDuration(150).start()
+                                closeOpened()
+                            } else {
+                                closeOpened()
+                                editText.setText(item.second)
+                                dialog.dismiss()
+                            }
+                            false
+                        }
+                    }
+                    MotionEvent.ACTION_CANCEL -> {
+                        if (dragging) {
+                            v.animate().translationX(startTx).setDuration(150).start()
+                            true
+                        } else false
+                    }
+                    else -> false
+                }
+            }
+            deleteBtn.setOnClickListener {
+                val idx = history.indexOf(item)
+                if (idx >= 0) {
+                    history.removeAt(idx)
+                    persistHistory(history)
+                }
+                container.removeView(rowRoot)
+                closeOpened()
+                if (history.isEmpty()) {
+                    dialog.dismiss()
+                    Toast.makeText(this, "历史台词已全部删除", Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            rowRoot.addView(deleteBtn)
+            rowRoot.addView(content)
+            container.addView(rowRoot)
+            // 行间分隔线
+            container.addView(View(this).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, 1
+                )
+                setBackgroundColor(0xFF38384A.toInt())
+            })
+        }
     }
 
     private fun saveTeleprompterContent() {

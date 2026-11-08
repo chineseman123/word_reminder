@@ -306,8 +306,13 @@ class CameraHelper(
         beautyRenderer?.let { return it.inputSurface }
         if (beautyRendererFailed) return null
         return try {
-            // 渲染目标是 TextureView：缓冲尺寸交给系统按 view 尺寸管理，
-            // 画面宽高比由 BeautyRenderer 内部按缓冲实际尺寸居中适配（防半屏黑/变形）
+            // 渲染目标是 TextureView。预览降级路径曾把缓冲尺寸设成 1920x1080（横屏），
+            // 这个值会粘在整个 SurfaceTexture 上，之后建出的 EGL surface 就是横屏缓冲，
+            // letterbox 会把竖屏画面压到中间、两边大黑边（重启进程才恢复）。
+            // 创建渲染器前必须把缓冲重置为 view 当前尺寸，中和掉历史污染。
+            val bw = if (textureView.width > 0) textureView.width else portraitWidth
+            val bh = if (textureView.height > 0) textureView.height else portraitHeight
+            viewSurfaceTexture.setDefaultBufferSize(bw, bh)
             val renderer = BeautyRenderer(viewSurfaceTexture, sensorWidth, sensorHeight)
             renderer.setSmoothing(beautySmooth)
             smoothedFace?.let { renderer.setFaceRect(it) }
@@ -388,6 +393,22 @@ class CameraHelper(
         if (!isClosed && cameraDevice != null && isOpened) {
             startPreview()
         }
+    }
+
+    /**
+     * TextureView 尺寸变化：把预览缓冲同步为 view 实际尺寸并重建 EGL window surface，
+     * 否则缓冲还是旧尺寸，letterbox 按错误宽高比缩放（画面被压到中间、两边黑）。
+     * 仅在美颜管线存在时调整；直送降级路径的缓冲必须是相机支持的尺寸，不能动。
+     */
+    fun onViewSizeChanged(w: Int, h: Int) {
+        if (isClosed) return
+        val st = textureView.surfaceTexture
+        val renderer = beautyRenderer
+        if (st != null && renderer != null && w > 0 && h > 0) {
+            st.setDefaultBufferSize(w, h)
+            renderer.recreateWindowSurface()
+        }
+        updatePreview()
     }
 
     /**
