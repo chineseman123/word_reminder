@@ -230,6 +230,7 @@ class MainActivity : AppCompatActivity() {
         cameraHelper?.onRecordingStopped = { path ->
             if (path == null && isRecording) {
                 isRecording = false
+                window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 btnRecord.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_record))
                 btnRecord.contentDescription = "开始录制"
                 stopTimer()
@@ -385,7 +386,7 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        // 字幕右下角手柄：横向拖动=拉伸字幕宽度，竖向拖动=上下移动字幕
+        // 字幕右下角手柄：横拖=调宽度，竖拖=调高度
         var handleLastX = 0f
         var handleLastY = 0f
         btnPanelHandle.setOnTouchListener { _, event ->
@@ -401,17 +402,14 @@ class MainActivity : AppCompatActivity() {
                     handleLastX = event.rawX
                     handleLastY = event.rawY
                     val parent = teleprompterScroll.parent as View
-                    // 横向：拉伸宽度（左边缘锚定）
                     val lp = teleprompterScroll.layoutParams
+                    // 横向：拉伸宽度（左边缘锚定）
                     lp.width = (teleprompterScroll.width + dx.toInt())
-                        .coerceIn(parent.width / 3, parent.width)
+                        .coerceIn(parent.width / 4, parent.width)
+                    // 竖向：拉伸高度（上边缘锚定，向下拖=变长）
+                    lp.height = (teleprompterScroll.height + dy.toInt())
+                        .coerceIn(parent.height / 6, parent.height / 2)
                     teleprompterScroll.layoutParams = lp
-                    // 竖向：上下移动字幕块
-                    teleprompterScroll.translationY = (teleprompterScroll.translationY + dy)
-                        .coerceIn(
-                            -teleprompterScroll.top.toFloat(),
-                            (parent.height - teleprompterScroll.top - teleprompterScroll.height).toFloat()
-                        )
                     updatePanelHandle()
                     true
                 }
@@ -845,6 +843,8 @@ class MainActivity : AppCompatActivity() {
             recordingStartTime = System.currentTimeMillis()
             startTimer()
             startScroll()
+            // 录制期间保持屏幕常亮，避免系统 1 分钟息屏打断录制
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             // Dim controls after a delay
             Handler(Looper.getMainLooper()).postDelayed({
                 if (isRecording) {
@@ -861,6 +861,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopRecording() {
+        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         cameraHelper?.stopRecording()
         isRecording = false
         btnRecord.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_record))
@@ -997,6 +998,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        // 应用切后台时去掉息屏锁，避免锁屏后继续亮屏耗电
+        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (isRecording) {
             // Don't stop recording on pause - keep recording in background
         }
