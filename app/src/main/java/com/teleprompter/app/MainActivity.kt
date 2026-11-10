@@ -407,8 +407,10 @@ class MainActivity : AppCompatActivity() {
                     lp.width = (teleprompterScroll.width + dx.toInt())
                         .coerceIn(parent.width / 4, parent.width)
                     // 竖向：拉伸高度（上边缘锚定，向下拖=变长）
+                    // 上限给到屏幕 85% 位置（留 15% 底部空间给功能栏/录制键）
+                    val topY = teleprompterScroll.top
                     lp.height = (teleprompterScroll.height + dy.toInt())
-                        .coerceIn(parent.height / 6, parent.height / 2)
+                        .coerceIn(parent.height / 8, (parent.height * 0.85f - topY).toInt())
                     teleprompterScroll.layoutParams = lp
                     updatePanelHandle()
                     true
